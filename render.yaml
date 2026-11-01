@@ -5,7 +5,7 @@ services:
   - type: web
     name: primeprep-cuetpg
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run start
