@@ -20,10 +20,7 @@ export function getRuntimeHmacSecret(purpose: string): string {
 }
 
 function getJwtSecret(): string {
-  const configured =
-    cleanEnvSecret(process.env.SUPABASE_JWT_SECRET) ||
-    cleanEnvSecret(process.env.JWT_SECRET) ||
-    cleanEnvSecret(process.env.RAZORPAY_KEY_SECRET);
+  const configured = cleanEnvSecret(process.env.JWT_SECRET);
   if (configured) {
     return configured;
   }

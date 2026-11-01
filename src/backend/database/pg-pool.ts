@@ -17,18 +17,15 @@ function cleanEnvValue(val?: string): string | undefined {
 }
 
 function getValidPostgresUri(): string | undefined {
-  // Prioritize DATABASE_URL (edirrhfsnbhorahwhomp) over any fallback variable
-  for (const candidate of [process.env.DATABASE_URL, process.env.SUPABASE_URL]) {
-    const val = (candidate || '').trim();
-    if (val.startsWith('postgres://') || val.startsWith('postgresql://')) {
-      try {
-        const parsed = new URL(val);
-        // Strip sslmode query parameter so node-postgres uses our explicit ssl: { rejectUnauthorized: false }
-        parsed.searchParams.delete('sslmode');
-        return parsed.toString();
-      } catch {
-        return val;
-      }
+  const val = (process.env.DATABASE_URL || '').trim();
+  if (val.startsWith('postgres://') || val.startsWith('postgresql://')) {
+    try {
+      const parsed = new URL(val);
+      // Strip sslmode query parameter so node-postgres uses our explicit ssl: { rejectUnauthorized: false }
+      parsed.searchParams.delete('sslmode');
+      return parsed.toString();
+    } catch {
+      return val;
     }
   }
   return undefined;

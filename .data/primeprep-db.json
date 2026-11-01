@@ -7,7 +7,7 @@
       "role": "admin",
       "account_status": "active",
       "created_at": "2026-10-01T09:00:00.000Z",
-      "updated_at": "2026-11-01T16:57:17.224Z"
+      "updated_at": "2026-11-01T18:50:14.363Z"
     },
     {
       "id": "k35vlsFO7GgfF1bw2qW9Wum0QKk1",
@@ -89,6 +89,24 @@
       "account_status": "active",
       "created_at": "2026-11-01T16:57:17.376Z",
       "updated_at": "2026-11-01T16:57:17.376Z"
+    },
+    {
+      "id": "prod-student-a-1793559014271",
+      "full_name": "Student A",
+      "email": "student.a.1793559014271@example.com",
+      "role": "student",
+      "account_status": "active",
+      "created_at": "2026-11-01T18:50:14.402Z",
+      "updated_at": "2026-11-01T18:50:14.402Z"
+    },
+    {
+      "id": "prod-student-b-1793559014271",
+      "full_name": "Student B",
+      "email": "student.b.1793559014271@example.com",
+      "role": "student",
+      "account_status": "active",
+      "created_at": "2026-11-01T18:50:14.464Z",
+      "updated_at": "2026-11-01T18:50:14.464Z"
     }
   ],
   "subjects": [
@@ -28077,6 +28095,84 @@
   },
   "payment_orders": [
     {
+      "id": "ord-46db7d34-6e7d-45b3-9a61-ef49407e1dec",
+      "user_id": "prod-student-b-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_cabfa48b64724a7a",
+      "expected_amount_paise": 44900,
+      "currency": "INR",
+      "status": "pending",
+      "created_at": "2026-11-01T18:50:14.687Z",
+      "updated_at": "2026-11-01T18:50:14.687Z"
+    },
+    {
+      "id": "ord-e9321995-c524-472f-a92e-4f504beeed34",
+      "user_id": "prod-student-b-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_f2cc0973d1b5f595",
+      "expected_amount_paise": 44900,
+      "currency": "INR",
+      "status": "failed",
+      "created_at": "2026-11-01T18:50:14.636Z",
+      "updated_at": "2026-11-01T18:50:14.669Z"
+    },
+    {
+      "id": "ord-5b86be17-489b-4eca-a909-665aa945f5d8",
+      "user_id": "prod-student-b-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_d1bb9bd42a807a2d",
+      "expected_amount_paise": 44900,
+      "currency": "INR",
+      "status": "pending",
+      "created_at": "2026-11-01T18:50:14.601Z",
+      "updated_at": "2026-11-01T18:50:14.601Z"
+    },
+    {
+      "id": "ord-8242eeac-dcc4-431c-9794-cf89e5d33010",
+      "user_id": "prod-student-a-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_1ad5d6ba53605d9c",
+      "expected_amount_paise": 44900,
+      "currency": "INR",
+      "status": "paid",
+      "created_at": "2026-11-01T18:50:14.560Z",
+      "updated_at": "2026-11-01T18:50:14.577Z"
+    },
+    {
+      "id": "ord-d49639fb-381d-408d-88f7-86837d71f497",
+      "user_id": "prod-student-b-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_dadaef538efdc7e8",
+      "expected_amount_paise": 44900,
+      "currency": "INR",
+      "status": "failed",
+      "created_at": "2026-11-01T18:50:14.526Z",
+      "updated_at": "2026-11-01T18:50:14.543Z"
+    },
+    {
+      "id": "ord-360bbabb-5966-4984-96d5-95eb653edda1",
+      "user_id": "prod-student-a-1793559014271",
+      "package_id": "pkg-political-science",
+      "subject_id": "subj-pol-sci",
+      "gateway": "razorpay",
+      "gateway_order_id": "order_rzp_589aa837f8591592",
+      "expected_amount_paise": 49900,
+      "currency": "INR",
+      "status": "paid",
+      "created_at": "2026-11-01T18:50:14.422Z",
+      "updated_at": "2026-11-01T18:50:14.442Z"
+    },
+    {
       "id": "ord-7b892206-e4e8-4d19-a943-a9040d378519",
       "user_id": "prod-student-b-1793552237103",
       "package_id": "pkg-philosophy",
@@ -28404,6 +28500,71 @@
   ],
   "payment_transactions": [
     {
+      "id": "txn-6d72cbec-5d21-407d-913c-54a125711b20",
+      "order_id": "ord-e9321995-c524-472f-a92e-4f504beeed34",
+      "user_id": "prod-student-b-1793559014271",
+      "gateway_payment_id": "pay_rzp_a390de1337f30b12",
+      "payment_status": "failed",
+      "verification_status": "rejected",
+      "amount_paise": 44900,
+      "currency": "INR",
+      "gateway_reference": "RAZORPAY_TEST_FAILED",
+      "verified_at": null,
+      "created_at": "2026-11-01T18:50:14.669Z"
+    },
+    {
+      "id": "txn-f8dbecbd-4d90-4006-b43e-31f2f48cb098",
+      "order_id": "ord-e9321995-c524-472f-a92e-4f504beeed34",
+      "user_id": "prod-student-b-1793559014271",
+      "gateway_payment_id": "pay_rzp_ceba86451ca711fe",
+      "payment_status": "pending",
+      "verification_status": "pending",
+      "amount_paise": 44900,
+      "currency": "INR",
+      "gateway_reference": "RAZORPAY_TEST_PENDING",
+      "verified_at": null,
+      "created_at": "2026-11-01T18:50:14.652Z"
+    },
+    {
+      "id": "txn-1acd7e68-5302-46b5-baeb-74d082c59c65",
+      "order_id": "ord-8242eeac-dcc4-431c-9794-cf89e5d33010",
+      "user_id": "prod-student-a-1793559014271",
+      "gateway_payment_id": "pay_wh_1793559014271",
+      "payment_status": "captured",
+      "verification_status": "verified",
+      "amount_paise": 44900,
+      "currency": "INR",
+      "gateway_reference": "WEBHOOK_evt_prod_1793559014271",
+      "verified_at": "2026-11-01T18:50:14.577Z",
+      "created_at": "2026-11-01T18:50:14.577Z"
+    },
+    {
+      "id": "txn-a6d16a16-0092-432b-b7fe-eb7fcec90e68",
+      "order_id": "ord-d49639fb-381d-408d-88f7-86837d71f497",
+      "user_id": "prod-student-b-1793559014271",
+      "gateway_payment_id": "pay_forged_1793559014271",
+      "payment_status": "failed",
+      "verification_status": "rejected",
+      "amount_paise": 44900,
+      "currency": "INR",
+      "gateway_reference": "INVALID_HMAC_SIGNATURE",
+      "verified_at": null,
+      "created_at": "2026-11-01T18:50:14.543Z"
+    },
+    {
+      "id": "txn-fac20c64-57e5-4991-a188-b43192f43e09",
+      "order_id": "ord-360bbabb-5966-4984-96d5-95eb653edda1",
+      "user_id": "prod-student-a-1793559014271",
+      "gateway_payment_id": "pay_prod_1793559014271",
+      "payment_status": "captured",
+      "verification_status": "verified",
+      "amount_paise": 49900,
+      "currency": "INR",
+      "gateway_reference": "order_rzp_589aa837f8591592",
+      "verified_at": "2026-11-01T18:50:14.442Z",
+      "created_at": "2026-11-01T18:50:14.442Z"
+    },
+    {
       "id": "txn-b72336ca-ca0d-403e-bbbb-b17646c64c92",
       "order_id": "ord-1507fff7-23c1-444f-b523-2ec803b68f43",
       "user_id": "prod-student-b-1793552237103",
@@ -28679,6 +28840,28 @@
   ],
   "purchases": [
     {
+      "id": "ent-4bd9041d-70a7-4c86-854b-7aadbe8492ec",
+      "user_id": "prod-student-a-1793559014271",
+      "package_id": "pkg-philosophy",
+      "subject_id": "subj-phil",
+      "payment_transaction_id": "txn-1acd7e68-5302-46b5-baeb-74d082c59c65",
+      "entitlement_status": "active",
+      "purchased_at": "2026-11-01T18:50:14.577Z",
+      "created_at": "2026-11-01T18:50:14.577Z",
+      "updated_at": "2026-11-01T18:50:14.577Z"
+    },
+    {
+      "id": "ent-c9341fa3-3656-4db7-a01b-fb91a14de226",
+      "user_id": "prod-student-a-1793559014271",
+      "package_id": "pkg-political-science",
+      "subject_id": "subj-pol-sci",
+      "payment_transaction_id": "txn-fac20c64-57e5-4991-a188-b43192f43e09",
+      "entitlement_status": "active",
+      "purchased_at": "2026-11-01T18:50:14.442Z",
+      "created_at": "2026-11-01T18:50:14.442Z",
+      "updated_at": "2026-11-01T18:50:14.442Z"
+    },
+    {
       "id": "ent-039dbbb3-3b89-42df-8264-ac6b50523645",
       "user_id": "prod-student-a-1793552237103",
       "package_id": "pkg-philosophy",
@@ -28779,6 +28962,24 @@
     }
   ],
   "attempts": [
+    {
+      "id": "att-885c21f0-ceae-4dc4-b813-88d715e83ac6",
+      "user_id": "prod-student-a-1793559014271",
+      "test_id": "test-political-science-flt-1",
+      "subject_id": "subj-pol-sci",
+      "category_slug": "full_length",
+      "attempt_number": 1,
+      "status": "submitted",
+      "started_at": "2026-11-01T18:50:14.722Z",
+      "expires_at": "2026-11-01T20:20:14.722Z",
+      "submitted_at": "2026-11-01T18:50:14.767Z",
+      "total_score": 4,
+      "maximum_marks": 32,
+      "correct_count": 1,
+      "incorrect_count": 0,
+      "unanswered_count": 7,
+      "time_taken_seconds": 1
+    },
     {
       "id": "att-7150d951-3e62-42e9-8508-967ee6be8f77",
       "user_id": "prod-student-a-1793552237103",
@@ -28960,9 +29161,68 @@
       "is_marked_for_review": true,
       "is_visited": true,
       "updated_at": "2026-11-01T16:57:17.690Z"
+    },
+    {
+      "id": "ans-7c28af5d-7ac7-4255-8eb0-3f8c4f705c11",
+      "attempt_id": "att-885c21f0-ceae-4dc4-b813-88d715e83ac6",
+      "question_id": "test-political-science-flt-1-q-1",
+      "selected_option": "B",
+      "is_marked_for_review": true,
+      "is_visited": true,
+      "updated_at": "2026-11-01T18:50:14.745Z"
     }
   ],
   "audit_logs": [
+    {
+      "id": "audit-cdd14882-fcc4-48a1-a854-5230ab346b8b",
+      "actor_id": "prod-student-a-1793559014271",
+      "actor_email": "student.a.1793559014271@example.com",
+      "action": "PAYMENT_CROSS_USER_ATTEMPT_BLOCKED",
+      "target_type": "payment_order",
+      "target_id": "ord-46db7d34-6e7d-45b3-9a61-ef49407e1dec",
+      "details": "User prod-student-a-1793559014271 attempted to verify order owned by prod-student-b-1793559014271",
+      "created_at": "2026-11-01T18:50:14.701Z"
+    },
+    {
+      "id": "audit-9eb46c14-d8e9-4bdb-9415-a859ab6f1578",
+      "actor_id": "prod-student-b-1793559014271",
+      "actor_email": "student.b.1793559014271@example.com",
+      "action": "PAYMENT_AMOUNT_TAMPER_REJECTED",
+      "target_type": "payment_order",
+      "target_id": "ord-5b86be17-489b-4eca-a909-665aa945f5d8",
+      "details": "Expected 44900 paise, got 100 paise",
+      "created_at": "2026-11-01T18:50:14.616Z"
+    },
+    {
+      "id": "audit-2b5d1d65-0537-47a0-b36c-cb37e23691a3",
+      "actor_id": "prod-student-b-1793559014271",
+      "actor_email": "student.b.1793559014271@example.com",
+      "action": "PAYMENT_SIGNATURE_INVALID",
+      "target_type": "payment_order",
+      "target_id": "ord-d49639fb-381d-408d-88f7-86837d71f497",
+      "details": "Rejected forged Razorpay signature for order order_rzp_dadaef538efdc7e8",
+      "created_at": "2026-11-01T18:50:14.543Z"
+    },
+    {
+      "id": "audit-366a8429-ce10-4376-b816-572caa2de715",
+      "actor_id": "prod-student-a-1793559014271",
+      "actor_email": "student.a.1793559014271@example.com",
+      "action": "SUBJECT_SERIES_PURCHASE_VERIFIED",
+      "target_type": "subject",
+      "target_id": "subj-pol-sci",
+      "details": "Verified payment pay_prod_1793559014271 (49900 paise) and unlocked subject subj-pol-sci",
+      "created_at": "2026-11-01T18:50:14.442Z"
+    },
+    {
+      "id": "audit-d9696441-64e9-483b-bfdc-0b94ceac08d2",
+      "actor_id": "admin-bootstrap-uid",
+      "actor_email": "rishabhkesharwani8218@gmail.com",
+      "action": "ROLE_VIEW_SWITCHED",
+      "target_type": "user",
+      "target_id": "admin-bootstrap-uid",
+      "details": "Switched active workspace role from admin to admin",
+      "created_at": "2026-11-01T18:50:14.364Z"
+    },
     {
       "id": "audit-eac07569-90aa-4a4e-90ed-9837b028545c",
       "actor_id": "prod-student-a-1793552237103",
@@ -29185,6 +29445,13 @@
     }
   ],
   "webhook_events": [
+    {
+      "id": "wh-47c42ca0-9933-4b78-805a-aed09ad80798",
+      "event_id": "evt_prod_1793559014271",
+      "event_type": "payment.captured",
+      "gateway_order_id": "order_rzp_1ad5d6ba53605d9c",
+      "processed_at": "2026-11-01T18:50:14.577Z"
+    },
     {
       "id": "wh-26294c76-b200-47f8-9c57-ffabadefb170",
       "event_id": "evt_prod_1793552237103",
