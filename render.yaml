@@ -1,0 +1,33 @@
+# Render Blueprint for PrimePrep CUET PG Platform
+# Supports single-service full-stack deployment (Express API + compiled React SPA)
+# or standalone backend API service when paired with a separate Vercel frontend.
+services:
+  - type: web
+    name: primeprep-cuetpg
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PGSSLMODE
+        value: require
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+      - key: ADMIN_SETUP_SECRET
+        sync: false

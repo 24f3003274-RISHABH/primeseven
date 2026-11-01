@@ -1,0 +1,6 @@
+{
+  "name": "PrimePrep — CUET PG Test Series & Examination Platform",
+  "description": "A production-grade CUET PG online test series and examination platform featuring 7 specialized postgraduate subjects, 210 structured mock examinations, subject-wise package entitlements, Razorpay Test Mode verification, server-authoritative examination timers, and comprehensive student and administrator analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

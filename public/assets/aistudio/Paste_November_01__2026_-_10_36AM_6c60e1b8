@@ -1,0 +1,1633 @@
+# PROJECT: PRIMEPREP
+## A Complete CUET PG Online Test Series and Examination Platform
+
+Act as a senior software architect, full-stack TypeScript developer, PostgreSQL database engineer, payment integration specialist, security engineer, and professional UI/UX designer.
+
+Build a complete, production-oriented, scalable online examination platform named **PrimePrep** for CUET PG preparation.
+
+This is not a simple landing page, static dashboard, or frontend prototype. It must be a real full-stack application with persistent database storage, authentication, role-based authorization, test management, examination functionality, payment processing, and student analytics.
+
+I want clean, understandable, maintainable code that a student developer can understand and extend.
+
+Do not overengineer the application. Prefer straightforward implementations, clear module boundaries, reusable components, and well-documented business logic.
+
+---
+
+# PART 1 — PRODUCT VISION AND BUSINESS MODEL
+
+PrimePrep is a CUET PG preparation platform where students can purchase subject-wise test series and attempt online mock examinations.
+
+The application must support two primary roles:
+
+1. Student
+2. Administrator
+
+Students can explore subjects, browse test categories, purchase complete subject test series, attempt eligible tests, and view their results.
+
+Administrators can manage subjects, tests, questions, pricing, purchases, payments, students, and platform analytics.
+
+The business model is subject-wise purchasing.
+
+A student purchases the complete test series of a subject, not individual tests.
+
+For example:
+
+If a student purchases Political Science, all eligible premium tests in Political Science become accessible.
+
+The student does not need to pay separately for Sectional Test 1, Sectional Test 2, Full-Length Test 1, and so on.
+
+However, purchasing Political Science must not unlock Philosophy, Psychology, History, Economics, Geography, or Disaster Management.
+
+The two platform-designated free tests remain accessible without purchasing the associated subject series.
+
+---
+
+# PART 2 — FIXED SUBJECTS AND TEST STRUCTURE
+
+Create exactly seven initial subjects:
+
+1. Political Science
+2. Philosophy
+3. Psychology
+4. History
+5. Economics
+6. Geography
+7. Disaster Management
+
+Each subject initially contains three test categories.
+
+### A. Sectional Tests
+
+- 15 tests per subject.
+- Default duration: 30 minutes.
+- Tests are dynamically managed by administrators.
+
+### B. Full-Length Tests
+
+- 10 tests per subject.
+- Default duration: 90 minutes.
+- These are premium by default.
+
+### C. Previous Year Question Tests (PYQ)
+
+- 5 tests per subject.
+- Duration configurable by the administrator.
+- These are premium by default except for the globally designated free PYQ test.
+
+Initial catalogue:
+
+- 7 subjects.
+- 30 tests per subject.
+- 210 tests in total.
+
+IMPORTANT:
+
+The numbers above describe the initial catalogue.
+
+Do not hardcode test counts, test names, subject IDs, test IDs, or category lists inside the React frontend.
+
+The database must be the source of truth.
+
+The administrator must be able to create additional tests, edit existing tests, change durations, and publish or unpublish tests without changing application source code.
+
+### Remove the chapter concept entirely.
+
+There must be:
+
+- No chapter selection.
+- No chapter-based navigation.
+- No chapter-based test grouping.
+- No chapter-based test pricing.
+- No chapter filters in the student interface.
+- No requirement to assign tests to chapters.
+
+The student navigation must be:
+
+Subjects → Test Categories → Individual Tests → Test Instructions → Examination → Results.
+
+---
+
+# PART 3 — TECHNOLOGY STACK
+
+Use the following architecture.
+
+## Frontend
+
+- React.
+- TypeScript.
+- Vite.
+- Tailwind CSS.
+- React Router.
+- TanStack Query for server-state management where appropriate.
+- React Hook Form for forms.
+- Zod for validation.
+- Recharts for analytics.
+
+Use a small, consistent UI component system.
+
+Do not introduce multiple UI libraries that perform the same purpose.
+
+## Backend
+
+- Node.js.
+- TypeScript.
+- Express.
+- REST API architecture.
+- Zod for request validation.
+- Centralized error handling.
+- Structured logging.
+
+Keep all business logic in backend services, not React components.
+
+## Database
+
+- Supabase PostgreSQL.
+- Supabase Auth.
+- Database migrations.
+- Foreign keys.
+- Unique constraints.
+- Indexes.
+- Appropriate Row Level Security policies.
+
+Use PostgreSQL as the primary persistent database.
+
+Do not automatically replace this architecture with Firebase Firestore.
+
+Do not use browser localStorage as the main database.
+
+Local storage may only be used for harmless preferences or temporary UI state.
+
+## Payments
+
+- Razorpay.
+- INR currency.
+- Razorpay Test Mode during development.
+- Server-side order creation.
+- Server-side payment verification.
+- Webhook signature verification.
+
+## Other libraries
+
+Use an appropriate Excel/XLSX processing library for administrator question uploads.
+
+Use an appropriate icon library such as Lucide React.
+
+Keep the dependency list small and justified.
+
+---
+
+# PART 4 — ARCHITECTURE AND PROJECT STRUCTURE
+
+Build a modular monolith.
+
+Do not create microservices.
+
+Use a structure similar to:
+
+primeprep/
+│
+├── frontend/
+│   ├── src/
+│   │   ├── app/
+│   │   ├── components/
+│   │   │   ├── common/
+│   │   │   ├── layout/
+│   │   │   ├── student/
+│   │   │   ├── examination/
+│   │   │   └── admin/
+│   │   ├── pages/
+│   │   │   ├── public/
+│   │   │   ├── auth/
+│   │   │   ├── student/
+│   │   │   └── admin/
+│   │   ├── features/
+│   │   │   ├── subjects/
+│   │   │   ├── tests/
+│   │   │   ├── attempts/
+│   │   │   ├── results/
+│   │   │   └── payments/
+│   │   ├── hooks/
+│   │   ├── services/
+│   │   ├── api/
+│   │   ├── types/
+│   │   ├── utils/
+│   │   └── routes/
+│   └── package.json
+│
+├── backend/
+│   ├── src/
+│   │   ├── config/
+│   │   ├── middleware/
+│   │   ├── modules/
+│   │   │   ├── auth/
+│   │   │   ├── users/
+│   │   │   ├── subjects/
+│   │   │   ├── categories/
+│   │   │   ├── tests/
+│   │   │   ├── questions/
+│   │   │   ├── attempts/
+│   │   │   ├── results/
+│   │   │   ├── payments/
+│   │   │   ├── purchases/
+│   │   │   └── admin/
+│   │   ├── database/
+│   │   ├── utils/
+│   │   ├── app.ts
+│   │   └── server.ts
+│   └── package.json
+│
+├── database/
+│   ├── migrations/
+│   ├── seeds/
+│   └── schema-documentation/
+│
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── DATABASE.md
+│   ├── API.md
+│   ├── PAYMENT_FLOW.md
+│   └── DEPLOYMENT.md
+│
+├── README.md
+└── .gitignore
+
+This is a suggested structure. Adapt it to the Google AI Studio runtime if necessary.
+
+Do not create unnecessary files or folders just to match the example.
+
+Maintain a clear separation between:
+
+- Frontend presentation.
+- API communication.
+- Backend controllers.
+- Backend services.
+- Database access.
+- Authentication.
+- Payment verification.
+- Business rules.
+
+Each module should have a clear responsibility.
+
+---
+
+# PART 5 — DATABASE DESIGN
+
+Design the relational PostgreSQL database before implementing business logic.
+
+Use UUID primary keys where appropriate.
+
+Use foreign keys, unique constraints, indexes, and appropriate timestamps.
+
+The following are logical entities. Reuse equivalent existing tables if available. Do not blindly create duplicates.
+
+## 5.1 Profiles / Users
+
+Store application-specific user information:
+
+- id, linked to Supabase Auth user.
+- full_name.
+- email.
+- role.
+- account_status.
+- created_at.
+- updated_at.
+
+Roles:
+
+- student
+- admin
+
+Do not allow a student to update their own role through a normal profile endpoint.
+
+## 5.2 Subjects
+
+Fields:
+
+- id.
+- name.
+- slug.
+- description.
+- is_active.
+- display_order.
+- created_at.
+- updated_at.
+
+Seed the seven required subjects.
+
+## 5.3 Test Categories
+
+Create three categories:
+
+- sectional
+- full_length
+- pyq
+
+Store categories in a normalized table or use a validated database enum, whichever is simpler and more appropriate.
+
+## 5.4 Tests
+
+Fields:
+
+- id.
+- subject_id.
+- category_id.
+- title.
+- test_number.
+- description.
+- duration_minutes.
+- total_questions.
+- maximum_marks.
+- positive_marks.
+- negative_marks.
+- access_type.
+- publication_status.
+- display_order.
+- created_at.
+- updated_at.
+
+Access types:
+
+- free
+- premium
+
+New tests must be premium by default.
+
+Publication states:
+
+- draft
+- published
+- unpublished
+
+Do not expose draft or unpublished tests as available student tests.
+
+## 5.5 Questions
+
+Fields:
+
+- id.
+- test_id.
+- question_text.
+- question_type.
+- option_a.
+- option_b.
+- option_c.
+- option_d.
+- correct_option.
+- explanation.
+- marks.
+- negative_marks.
+- display_order.
+- created_at.
+- updated_at.
+
+For the initial examination system, support single-correct-answer MCQs with four options.
+
+Design the schema so that additional question types can be added later without rewriting the entire platform.
+
+Correct answers and explanations must never be exposed through public test-catalogue APIs or pre-submission question APIs.
+
+## 5.6 Subject-Series Packages
+
+Represent the complete purchasable test series for each subject.
+
+Fields:
+
+- id.
+- subject_id.
+- package_name.
+- description.
+- price_paise.
+- currency.
+- is_available_for_sale.
+- created_at.
+- updated_at.
+
+Enforce one active standard subject-series package per subject unless the application later introduces explicitly designed package variants.
+
+Store money as integer paise.
+
+Example:
+
+₹499 = 49900 paise.
+
+Never use floating-point values for financial calculations.
+
+## 5.7 Free-Test Configuration
+
+Maintain the platform's two globally designated free tests.
+
+Configuration:
+
+- one globally designated Sectional Test.
+- one globally designated PYQ Test.
+
+Do not create one free Sectional Test and one free PYQ Test for every subject.
+
+There must be no free Full-Length Test by default.
+
+Allow administrators to change the designated tests through a secure configuration interface.
+
+Enforce the global limits.
+
+If the free designation is removed, the test becomes premium unless the administrator designates another test.
+
+## 5.8 Payment Orders
+
+Store:
+
+- id.
+- user_id.
+- package_id.
+- gateway.
+- gateway_order_id.
+- expected_amount_paise.
+- currency.
+- status.
+- created_at.
+- updated_at.
+
+## 5.9 Payment Transactions
+
+Store:
+
+- id.
+- order_id.
+- gateway_payment_id.
+- payment_status.
+- verification_status.
+- amount_paise.
+- currency.
+- gateway_reference.
+- verified_at.
+- created_at.
+
+Enforce appropriate unique constraints for gateway identifiers.
+
+## 5.10 Purchases / Entitlements
+
+Store:
+
+- id.
+- user_id.
+- package_id.
+- subject_id.
+- payment_transaction_id.
+- entitlement_status.
+- purchased_at.
+- created_at.
+- updated_at.
+
+A successful purchase creates an entitlement for that user and that subject package.
+
+Enforce uniqueness for an active user-package entitlement.
+
+## 5.11 Test Attempts
+
+Store:
+
+- id.
+- user_id.
+- test_id.
+- attempt_number.
+- status.
+- started_at.
+- expires_at.
+- submitted_at.
+- total_score.
+- correct_count.
+- incorrect_count.
+- unanswered_count.
+- time_taken_seconds.
+
+Preserve the one-attempt policy.
+
+Do not allow students to create unlimited attempts by repeatedly calling the API.
+
+## 5.12 Attempt Answers
+
+Store:
+
+- id.
+- attempt_id.
+- question_id.
+- selected_option.
+- is_marked_for_review.
+- updated_at.
+
+Use a unique constraint on attempt_id and question_id.
+
+## 5.13 Audit and Webhook Events
+
+Maintain records for important administrative and payment actions.
+
+Store webhook event identifiers to support idempotent processing.
+
+Never log payment secrets.
+
+Create the schema documentation and migration files.
+
+Do not delete existing academic or payment data during migrations.
+
+---
+
+# PART 6 — STUDENT-FACING WEBSITE
+
+Build a polished educational platform.
+
+The UI must feel like a serious examination preparation product, not a generic AI-generated dashboard.
+
+## 6.1 Public landing page
+
+Create a professional homepage with:
+
+- PrimePrep logo / wordmark.
+- Navigation.
+- Hero section.
+- CUET PG preparation introduction.
+- Seven subjects.
+- Test-series benefits.
+- How the platform works.
+- Free test information.
+- Subject-series purchase information.
+- Login and registration actions.
+- Footer.
+
+Use meaningful copy.
+
+Do not invent fake testimonials, student counts, rankings, or performance claims.
+
+Use actual database values for dynamic statistics.
+
+## 6.2 Authentication
+
+Provide:
+
+- Registration.
+- Login.
+- Logout.
+- Password reset.
+- Session persistence.
+- Protected routes.
+- Role-based navigation.
+
+Use Supabase Auth.
+
+After login:
+
+- Students should reach the student dashboard.
+- Administrators should reach the admin dashboard.
+
+Do not expose admin pages or APIs to ordinary students.
+
+## 6.3 Student dashboard
+
+Show:
+
+- Welcome message.
+- Available subjects.
+- Purchased subject series.
+- Locked subject series.
+- Tests attempted.
+- Completed tests.
+- Recent results.
+- Performance summary.
+- Continue preparation action.
+
+All statistics must come from actual backend data.
+
+Do not use hardcoded charts or random numbers.
+
+## 6.4 Subject catalogue
+
+Show exactly seven active subjects.
+
+Each subject card should contain:
+
+- Subject name.
+- Short description.
+- Number of available tests.
+- Purchase status.
+- Package price if not purchased.
+- Explore button.
+
+Use actual backend values.
+
+## 6.5 Subject detail page
+
+After selecting a subject, display:
+
+- Subject title.
+- Subject description.
+- Purchase status.
+- Package price.
+- Total available tests.
+- Sectional Tests.
+- Full-Length Tests.
+- PYQ Tests.
+
+Do not introduce chapters.
+
+Each category should show its actual test count.
+
+## 6.6 Test catalogue
+
+Display all published tests in their category.
+
+Each test card should show:
+
+- Test title.
+- Test number.
+- Duration.
+- Number of questions.
+- Maximum marks.
+- Free / Premium badge.
+- Locked / Unlocked / Completed status.
+
+Students who have not purchased the subject series must still be able to see the test catalogue.
+
+They must not receive a raw HTTP 403 error merely for browsing tests.
+
+For locked tests, show a professional lock indicator and a clear purchase action.
+
+---
+
+# PART 7 — SUBJECT-WISE PAYMENT MODEL
+
+This is a critical business requirement.
+
+A student purchases the complete test series for one subject.
+
+Do not charge students individually for every test.
+
+Example:
+
+A student opens Political Science.
+
+They can see:
+
+- Sectional Test 1.
+- Sectional Test 2.
+- Sectional Test 3.
+- ...
+- Sectional Test 15.
+- Full-Length Test 1 through 10.
+- PYQ Test 1 through 5.
+
+Only the globally designated free Sectional Test and free PYQ Test are available without a subject purchase.
+
+All other tests require a valid Political Science entitlement.
+
+When a student purchases the Political Science Test Series, all eligible premium tests in Political Science unlock.
+
+The student must purchase another subject package to unlock its premium tests.
+
+## 7.1 Locked-test click behavior
+
+When a student clicks a premium test without owning the relevant subject package:
+
+1. Check the access status.
+2. Identify the test's subject.
+3. Navigate to the correct subject purchase page.
+4. Preserve the intended test destination.
+5. Show the complete subject package.
+6. Explain that one purchase unlocks eligible premium tests across the subject.
+7. Display the subject-series price.
+8. Display included test categories and counts.
+9. Provide a prominent Purchase Subject Test Series button.
+
+Do not show raw authorization errors as the expected student experience.
+
+If the student is not logged in, redirect to login and preserve the purchase destination.
+
+## 7.2 Purchase page
+
+Example:
+
+Political Science — Complete Test Series
+
+Includes:
+
+- All eligible premium Sectional Tests.
+- All eligible premium Full-Length Tests.
+- All eligible premium PYQ Tests.
+
+Show dynamically:
+
+- Total tests.
+- Category-wise test counts.
+- Subject package price.
+- Current purchase status.
+
+Use clear messaging:
+
+"Purchase the complete Political Science Test Series once and unlock all eligible premium tests included in this subject package. You do not need to pay separately for each test."
+
+Also mention that the two globally designated free tests remain available without purchasing the subject series.
+
+## 7.3 Already purchased
+
+If the user already owns the subject package:
+
+- Do not show another purchase action as the primary action.
+- Display "Subject Series Unlocked".
+- Provide Explore Tests.
+- Prevent unnecessary duplicate purchases on the backend.
+
+---
+
+# PART 8 — SECURE RAZORPAY INTEGRATION
+
+Implement Razorpay in Test Mode first.
+
+All payment decisions must be made on the backend.
+
+### Payment process
+
+1. Student selects a subject package.
+2. Frontend requests an order from the backend.
+3. Backend authenticates the student.
+4. Backend retrieves the package and current price from PostgreSQL.
+5. Backend checks existing entitlement.
+6. Backend creates a pending order.
+7. Backend creates the corresponding Razorpay order.
+8. Frontend opens Razorpay Checkout.
+9. Student completes checkout.
+10. Frontend sends the payment identifiers and signature to the backend.
+11. Backend verifies the Razorpay signature.
+12. Backend validates order, amount, currency, user, and package relationships.
+13. Backend confirms the payment state.
+14. Backend records the verified transaction.
+15. Backend creates the subject entitlement.
+16. Student is redirected to the subject catalogue or originally selected test.
+
+Implement Razorpay webhook verification.
+
+Requirements:
+
+- Verify webhook signatures using the raw body where required.
+- Store processed event identifiers.
+- Handle duplicate webhooks safely.
+- Handle retries.
+- Handle delayed payment confirmation.
+- Prevent forged payment callbacks.
+- Prevent amount tampering.
+- Prevent a user from using another user's order.
+- Do not grant access for pending or failed payments.
+
+Only grant entitlement after the payment is verified as successful and captured according to the supported gateway flow.
+
+Keep the Razorpay secret and webhook secret server-side.
+
+Do not place payment secrets in frontend environment variables or browser code.
+
+Implement an order status endpoint so the frontend can check payment confirmation.
+
+If payment is pending, show a pending state instead of falsely showing success.
+
+---
+
+# PART 9 — TEST-TAKING ENGINE
+
+Build a reliable examination interface.
+
+The examination interface is one of the most important parts of PrimePrep.
+
+## 9.1 Instructions page
+
+Before an examination starts, display:
+
+- Subject.
+- Test title.
+- Test category.
+- Number of questions.
+- Duration.
+- Total maximum marks.
+- Positive marking.
+- Negative marking.
+- Instructions.
+
+Default examination marking scheme:
+
+- Correct answer: +4 marks.
+- Incorrect answer: -1 mark.
+- Unanswered: 0 marks.
+
+These values should be configurable per test by the administrator.
+
+The Start Test button should be available only if the user has valid access.
+
+## 9.2 Timer
+
+When a test starts:
+
+- Create an attempt on the backend.
+- Record server-side started_at.
+- Record server-side expires_at.
+- Return the authoritative deadline.
+- Display a countdown in the frontend.
+
+The frontend timer is for display only.
+
+The backend must enforce the deadline.
+
+Refreshing the browser must not reset the timer.
+
+Changing the device clock must not extend the examination.
+
+## 9.3 Question interface
+
+Display:
+
+- Question number.
+- Question text.
+- Four options.
+- Previous.
+- Save & Next.
+- Mark for Review.
+- Clear Response.
+- Submit Test.
+- Countdown timer.
+
+Add a question navigation palette.
+
+Use clear visual states:
+
+- Not visited.
+- Answered.
+- Not answered.
+- Marked for review.
+- Answered and marked for review.
+
+Make the interface usable on desktop, tablets, and mobile.
+
+## 9.4 Answer persistence
+
+Save answers through the backend.
+
+Persist:
+
+- Selected option.
+- Review status.
+- Updated timestamp.
+
+A refresh must not erase saved answers.
+
+Prevent duplicate answer records.
+
+Handle network failures without silently losing answers.
+
+## 9.5 Submission
+
+Before submission, show a confirmation dialog.
+
+On submission:
+
+- Backend validates the attempt.
+- Backend checks the deadline.
+- Backend evaluates answers.
+- Backend computes the score.
+- Backend records correct, incorrect, and unanswered counts.
+- Backend marks the attempt submitted.
+- Backend prevents further answer changes.
+
+Automatic submission must happen when the server-side deadline expires.
+
+Never trust a score sent by the browser.
+
+Enforce the one-attempt policy through backend validation and database constraints.
+
+---
+
+# PART 10 — RESULTS AND ANALYTICS
+
+After a submitted test, display:
+
+- Total score.
+- Maximum marks.
+- Percentage.
+- Correct answers.
+- Incorrect answers.
+- Unanswered questions.
+- Time taken.
+- Accuracy.
+- Question-wise analysis.
+- Correct answer.
+- Student's answer.
+- Explanation / solution.
+
+Only reveal correct answers and explanations at the appropriate result stage.
+
+## Subject-specific history
+
+Each subject page should show that subject's test history:
+
+- Test title.
+- Attempt date.
+- Score.
+- Maximum marks.
+- Percentage.
+- Result status.
+
+## My Results
+
+Create a consolidated results page containing all subjects.
+
+Allow filters by:
+
+- Subject.
+- Test category.
+- Date.
+- Completion status.
+
+Show performance trends using Recharts.
+
+All metrics must be calculated from actual backend data.
+
+Do not create random analytics.
+
+---
+
+# PART 11 — ADMIN DASHBOARD
+
+Build a separate professional administrator interface.
+
+Use a desktop-first sidebar with responsive mobile navigation.
+
+Admin modules:
+
+1. Overview.
+2. Subjects.
+3. Test Categories.
+4. Test Management.
+5. Question Bank.
+6. Excel Upload.
+7. Free Test Configuration.
+8. Subject-Series Pricing.
+9. Students.
+10. Purchases.
+11. Payments.
+12. Reports.
+13. Settings.
+
+## 11.1 Admin overview
+
+Show actual:
+
+- Registered students.
+- Active students.
+- Total published tests.
+- Total questions.
+- Total verified purchases.
+- Revenue from verified payments.
+- Subject-wise sales.
+- Recent transactions.
+- Recent attempts.
+
+Do not hardcode dashboard metrics.
+
+## 11.2 Subject management
+
+Administrator can:
+
+- View the seven subjects.
+- Edit descriptions.
+- Activate/deactivate subjects.
+- Change display order.
+
+Do not allow creation of duplicate subject names accidentally.
+
+## 11.3 Test management
+
+Administrator can:
+
+- Create a test.
+- Edit a test.
+- Change its category.
+- Change its subject.
+- Set duration.
+- Set question count.
+- Set marks.
+- Set negative marking.
+- Publish/unpublish.
+- Change test number.
+- Reorder tests.
+
+New tests must be premium by default.
+
+There must be no chapter field.
+
+## 11.4 Question management
+
+Administrator can:
+
+- Add a question.
+- Edit question text.
+- Edit all four options.
+- Change the correct answer.
+- Add or edit the explanation.
+- Change question order.
+- Delete a question subject to appropriate safeguards.
+
+Validate question data before publishing.
+
+Do not permit a published test to be attempted with incomplete questions or invalid correct answers.
+
+## 11.5 Excel question upload
+
+Support Excel/XLSX upload.
+
+Provide a downloadable sample template.
+
+Recommended columns:
+
+- subject
+- category
+- test_number
+- test_title
+- question_number
+- question_text
+- option_a
+- option_b
+- option_c
+- option_d
+- correct_option
+- solution
+- marks
+- negative_marks
+
+Do not require chapter fields.
+
+Import workflow:
+
+1. Administrator selects subject.
+2. Administrator selects test category.
+3. Administrator selects test number or creates a test.
+4. Administrator uploads the spreadsheet.
+5. Backend validates the file.
+6. Show a preview.
+7. Display valid rows and invalid rows.
+8. Show row-specific errors.
+9. Administrator confirms import.
+10. Import valid records safely.
+11. Report final success and failure counts.
+
+Prevent accidental duplicate question imports.
+
+Use transactions or safe batch operations where appropriate.
+
+Do not silently skip invalid rows.
+
+## 11.6 Free-test configuration
+
+Provide a dedicated configuration interface.
+
+The administrator can designate:
+
+- One global free Sectional Test.
+- One global free PYQ Test.
+
+Show the currently designated tests.
+
+Enforce one designation per category across the whole platform.
+
+Full-Length Tests remain premium by default.
+
+## 11.7 Subject-series pricing
+
+Provide package management for all seven subjects.
+
+Administrator can:
+
+- Set the complete subject-series price.
+- Enable or disable sales.
+- See included test counts.
+- View purchase totals.
+- View subject-wise revenue.
+
+Store amounts in paise.
+
+Changing the package price must not change existing completed transaction amounts.
+
+## 11.8 Purchase and payment management
+
+Show:
+
+- Student.
+- Subject package.
+- Order ID.
+- Payment ID.
+- Amount.
+- Currency.
+- Payment status.
+- Verification status.
+- Purchase date.
+
+Only verified successful payments count as revenue.
+
+Never allow administrators to casually edit a gateway transaction to make it successful.
+
+If a manual entitlement correction is needed, require an authorized admin action with a reason and audit record.
+
+---
+
+# PART 12 — SECURITY REQUIREMENTS
+
+Security is mandatory.
+
+Implement:
+
+- Authentication middleware.
+- Role-based authorization.
+- Input validation.
+- Rate limiting for sensitive endpoints.
+- Centralized error handling.
+- Secure CORS.
+- Environment-based secrets.
+- PostgreSQL constraints.
+- Appropriate RLS.
+- Secure payment verification.
+- Webhook idempotency.
+- Audit logs.
+
+Protect:
+
+- Premium questions.
+- Correct answers.
+- Solutions.
+- Student results.
+- Payment records.
+- Admin operations.
+
+Do not rely on frontend conditional rendering for authorization.
+
+Do not trust:
+
+- user IDs supplied in request bodies.
+- prices supplied by the frontend.
+- payment-success messages from the browser.
+- scores calculated by React.
+- access flags stored in localStorage.
+- client-side test deadlines.
+
+Every important decision must be verified by the backend.
+
+A student must never gain access to premium content simply by changing a URL, modifying browser state, or directly calling an API endpoint.
+
+---
+
+# PART 13 — DESIGN SYSTEM AND USER EXPERIENCE
+
+Create a premium, clean, professional education-platform interface.
+
+Design direction:
+
+- White background.
+- Light slate surfaces.
+- Navy primary typography.
+- One restrained blue accent.
+- Green for successful states.
+- Amber for pending states.
+- Red for errors.
+- Consistent borders.
+- Subtle shadows.
+- Clean cards.
+- Clear typography.
+- Generous spacing.
+
+Avoid:
+
+- Excessive gradients.
+- Excessive glassmorphism.
+- Large decorative animations.
+- Unnecessary floating elements.
+- Overloaded dashboards.
+- Too many colors.
+- Generic AI-generated landing-page aesthetics.
+
+Use responsive layouts.
+
+Ensure:
+
+- Mobile navigation works.
+- Tables adapt to mobile.
+- Forms are usable on small screens.
+- Examination navigation remains usable.
+- Buttons have clear states.
+- Loading and empty states are designed.
+- Error messages are actionable.
+
+Use reusable components for:
+
+- Cards.
+- Buttons.
+- Modals.
+- Tables.
+- Forms.
+- Badges.
+- Loading indicators.
+- Empty states.
+- Alerts.
+
+---
+
+# PART 14 — API DESIGN
+
+Use REST APIs with consistent response formats.
+
+Use route prefixes such as:
+
+/api/v1/auth
+/api/v1/subjects
+/api/v1/categories
+/api/v1/tests
+/api/v1/questions
+/api/v1/attempts
+/api/v1/results
+/api/v1/payments
+/api/v1/purchases
+/api/v1/admin
+
+These are suggested prefixes. Follow a consistent final API structure.
+
+Example required capabilities:
+
+### Public/student
+
+- Get active subjects.
+- Get subject details.
+- Get category-wise tests.
+- Get test catalogue and access status.
+- Get package details.
+- Get current student's purchases.
+- Create a subject-package order.
+- Verify payment.
+- Check payment status.
+- Start an eligible attempt.
+- Retrieve authorized questions.
+- Save answers.
+- Mark questions for review.
+- Submit test.
+- Retrieve results.
+- Retrieve subject-specific history.
+- Retrieve consolidated results.
+
+### Admin
+
+- Manage subjects.
+- Manage tests.
+- Manage questions.
+- Upload Excel files.
+- Configure free tests.
+- Manage package pricing.
+- View students.
+- View transactions.
+- View purchases.
+- View reports.
+
+### Webhooks
+
+- Receive Razorpay events.
+- Verify signatures.
+- Process idempotently.
+
+Use structured response objects.
+
+Do not expose internal stack traces or sensitive database information to users.
+
+Generate API documentation.
+
+---
+
+# PART 15 — TESTING
+
+Write tests for critical business rules.
+
+At minimum, verify:
+
+1. Exactly seven initial subjects exist.
+2. Initial test catalogue supports 15 Sectional, 10 Full-Length, and 5 PYQ tests per subject.
+3. Tests can be added dynamically.
+4. No chapter-based navigation or purchase logic exists.
+5. Only one globally designated Sectional Test is free.
+6. Only one globally designated PYQ Test is free.
+7. No Full-Length Test is free by default.
+8. Unauthenticated students cannot start protected tests.
+9. Students can browse published test metadata without purchasing.
+10. Students cannot retrieve premium questions without entitlement.
+11. Purchasing Political Science unlocks eligible Political Science premium tests.
+12. Political Science purchase does not unlock Philosophy.
+13. Successful payment is verified on the backend.
+14. Failed payment does not grant access.
+15. Pending payment does not grant access prematurely.
+16. Invalid signature does not grant access.
+17. Duplicate webhook does not create duplicate entitlement.
+18. Price tampering is rejected.
+19. Another student's payment cannot unlock a package.
+20. A completed subject purchase is not charged again unnecessarily.
+21. One-attempt restriction is enforced.
+22. Timer cannot be extended by changing the browser clock.
+23. Refreshing the test does not erase saved answers.
+24. Backend calculates marks correctly.
+25. Admin-only operations are protected.
+26. Excel validation catches invalid questions.
+27. Dashboard statistics reflect real database values.
+
+Create meaningful test data only in development seed scripts.
+
+Never mix development demo data with production data.
+
+---
+
+# PART 16 — PERFORMANCE AND SCALABILITY
+
+Prepare the application for growth without unnecessary complexity.
+
+Implement:
+
+- Database indexes on frequently queried columns.
+- Pagination for tests, students, payments, and attempts.
+- Efficient queries.
+- Avoid N+1 query patterns.
+- Server-side filtering and sorting for large datasets.
+- Reusable API clients.
+- TanStack Query caching where appropriate.
+- Safe batch Excel imports.
+- Appropriate database transactions.
+- Structured logs.
+- Health-check endpoint.
+- Environment-based configuration.
+
+Do not fetch every question in the platform when opening a subject page.
+
+Do not fetch all student records for an admin dashboard.
+
+Do not load premium question content until the user has passed backend access validation.
+
+Design for future growth, but do not introduce Redis, Kafka, microservices, Kubernetes, or other infrastructure unless there is a real measured need.
+
+---
+
+# PART 17 — DEPLOYMENT AND ENVIRONMENT VARIABLES
+
+The application should be deployable using:
+
+- Frontend: Vercel or an appropriate static frontend host.
+- Backend: Render or Google Cloud Run.
+- Database: Supabase PostgreSQL.
+- Authentication: Supabase Auth.
+
+Google AI Studio may also deploy the full-stack application to Cloud Run.
+
+Do not assume the development environment and production environment share the same secrets.
+
+Create `.env.example` files without real secrets.
+
+Backend environment variables should include the equivalents of:
+
+NODE_ENV
+PORT
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_ANON_KEY
+DATABASE_URL
+RAZORPAY_KEY_ID
+RAZORPAY_KEY_SECRET
+RAZORPAY_WEBHOOK_SECRET
+FRONTEND_URL
+
+Only include variables actually required by the chosen implementation.
+
+Never commit real `.env` files.
+
+Never expose Supabase service-role keys or Razorpay secret keys to the browser.
+
+Document environment configuration.
+
+Create deployment documentation explaining:
+
+- Supabase project setup.
+- Database migration execution.
+- Supabase Auth configuration.
+- Admin account creation.
+- Razorpay Test Mode setup.
+- Webhook URL configuration.
+- Frontend deployment.
+- Backend deployment.
+- CORS configuration.
+- Production verification.
+
+---
+
+# PART 18 — DEVELOPMENT APPROACH
+
+IMPORTANT: Build the application in controlled stages.
+
+Do not generate the entire system as a single unverified code dump.
+
+Work in the following sequence:
+
+### Stage 1 — Architecture and planning
+
+Inspect the requirements.
+
+Create:
+
+- Architecture document.
+- Database relationship plan.
+- Project structure.
+- API plan.
+- Implementation roadmap.
+
+Identify assumptions and ask before any destructive database operation.
+
+### Stage 2 — Project foundation
+
+Set up:
+
+- Frontend.
+- Backend.
+- TypeScript.
+- Routing.
+- Tailwind.
+- API client.
+- Environment configuration.
+- Error handling.
+
+Run the application and verify the initial build.
+
+### Stage 3 — Database and authentication
+
+Implement:
+
+- PostgreSQL schema.
+- Migrations.
+- Subject seed data.
+- Authentication.
+- User profiles.
+- Role authorization.
+
+Test student and admin accounts.
+
+### Stage 4 — Subject and test catalogue
+
+Implement:
+
+- Seven subjects.
+- Three test categories.
+- Test management.
+- Dynamic test catalogue.
+- Public metadata.
+- Free-test configuration.
+
+### Stage 5 — Examination engine
+
+Implement:
+
+- Instructions page.
+- Timer.
+- Question navigation.
+- Answer persistence.
+- Review palette.
+- Submission.
+- Automatic evaluation.
+- Results.
+
+Test the complete free-test journey.
+
+### Stage 6 — Subject-series purchases
+
+Implement:
+
+- Package configuration.
+- Package pricing.
+- Purchase page.
+- Locked-test redirection.
+- Razorpay orders.
+- Payment verification.
+- Webhooks.
+- Entitlements.
+
+Use Test Mode.
+
+### Stage 7 — Admin panel
+
+Implement:
+
+- Subject management.
+- Test management.
+- Question bank.
+- Excel import.
+- Pricing.
+- Free-test configuration.
+- Payment management.
+- Reports.
+
+### Stage 8 — Student analytics
+
+Implement:
+
+- Student dashboard.
+- Subject history.
+- My Results.
+- Performance charts.
+- Purchase history.
+
+### Stage 9 — Security and testing
+
+Test all access-control, payment, timer, attempt, and role restrictions.
+
+Fix build errors and runtime errors.
+
+### Stage 10 — Deployment preparation
+
+Verify:
+
+- Production environment variables.
+- Database migrations.
+- CORS.
+- Authentication redirects.
+- Payment webhooks.
+- Health checks.
+- Production build.
+- Responsive interface.
+
+---
+
+# PART 19 — CODE QUALITY RULES
+
+Follow these rules throughout development:
+
+1. Write understandable TypeScript.
+2. Avoid using `any` unless there is a documented reason.
+3. Keep components small and focused.
+4. Keep database access out of UI components.
+5. Keep payment logic out of React.
+6. Keep score calculation on the backend.
+7. Avoid duplicate business logic.
+8. Use reusable validation schemas.
+9. Use consistent naming conventions.
+10. Handle loading, empty, success, and error states.
+11. Add comments for complex business rules.
+12. Do not create fake API responses for production functionality.
+13. Do not hide incomplete functionality behind attractive UI.
+14. Do not replace working modules unnecessarily.
+15. Do not claim an integration is complete until it has been tested.
+
+After every stage:
+
+- Run the build.
+- Check TypeScript errors.
+- Check runtime errors.
+- Test the relevant user journey.
+- Explain which files were changed.
+- Explain how to verify the feature.
+
+---
+
+# PART 20 — FINAL PRODUCT EXPECTATION
+
+The finished application should behave like a professional CUET PG examination platform.
+
+A student should be able to:
+
+1. Open PrimePrep.
+2. Register or log in.
+3. See seven subjects.
+4. Open any subject.
+5. Browse Sectional, Full-Length, and PYQ tests.
+6. See all published test numbers.
+7. Identify free, locked, and unlocked tests.
+8. Attempt the two globally designated free tests without purchasing a subject.
+9. Click a locked premium test and reach the correct subject purchase page.
+10. Purchase the complete subject test series.
+11. Complete Razorpay checkout.
+12. Receive access only after backend payment verification.
+13. Attempt eligible premium tests in that subject.
+14. Save answers and navigate questions.
+15. Submit an examination.
+16. See results and solutions.
+17. Track performance across subjects.
+18. View purchase history.
+
+An administrator should be able to:
+
+1. Manage seven subjects.
+2. Manage test categories.
+3. Create and publish tests.
+4. Add and edit questions.
+5. Upload questions through Excel.
+6. Configure the two global free tests.
+7. Set each subject's package price.
+8. View purchases and transactions.
+9. Monitor student performance.
+10. Manage the platform without editing source code.
+
+The final result must be a secure, database-driven, maintainable, scalable full-stack application.
+
+Do not compromise backend correctness for frontend appearance.
+
+Do not compromise payment security for convenience.
+
+Do not make premium content accessible based on frontend state.
+
+Start with the architecture and implementation plan, then proceed stage by stage.
