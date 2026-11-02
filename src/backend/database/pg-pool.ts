@@ -145,6 +145,7 @@ export async function runPostgresMigrations(): Promise<{
     // Ensure non-destructive additive schema upgrades are always present
     await client.query(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
       CREATE TABLE IF NOT EXISTS user_bookmarks (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -261,7 +262,16 @@ export async function syncDatabaseToPostgres(
       );
     }
 
-    if (options.includeFullCatalogue) {
+    let shouldSyncCatalogue = Boolean(options.includeFullCatalogue);
+    if (shouldSyncCatalogue) {
+      const countRes = await client.query('SELECT COUNT(*)::int AS cnt FROM questions');
+      const existingCount = Number(countRes.rows?.[0]?.cnt || 0);
+      if (existingCount >= db.questions.length) {
+        shouldSyncCatalogue = false;
+      }
+    }
+
+    if (shouldSyncCatalogue) {
       // 4. Tests (210 tests — batched multi-row upsert)
       const testBatchSize = 50;
       for (let i = 0; i < db.tests.length; i += testBatchSize) {
@@ -383,12 +393,16 @@ export async function syncDatabaseToPostgres(
     // 7. Users
     for (const u of db.users) {
       await client.query(
-        `INSERT INTO users (id, full_name, email, password_hash, role, account_status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO users (id, full_name, email, password_hash, must_change_password, referral_code, referred_by_user_id, referred_by_code, role, account_status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (id) DO UPDATE SET
            full_name = EXCLUDED.full_name,
            email = EXCLUDED.email,
            password_hash = COALESCE(EXCLUDED.password_hash, users.password_hash),
+           must_change_password = EXCLUDED.must_change_password,
+           referral_code = COALESCE(EXCLUDED.referral_code, users.referral_code),
+           referred_by_user_id = COALESCE(EXCLUDED.referred_by_user_id, users.referred_by_user_id),
+           referred_by_code = COALESCE(EXCLUDED.referred_by_code, users.referred_by_code),
            role = EXCLUDED.role,
            account_status = EXCLUDED.account_status,
            updated_at = EXCLUDED.updated_at`,
@@ -397,6 +411,10 @@ export async function syncDatabaseToPostgres(
           u.full_name,
           u.email,
           u.password_hash || null,
+          Boolean(u.must_change_password),
+          u.referral_code || null,
+          u.referred_by_user_id || null,
+          u.referred_by_code || null,
           u.role,
           u.account_status,
           u.created_at,
@@ -405,13 +423,116 @@ export async function syncDatabaseToPostgres(
       );
     }
 
+    // 7B. Sales Agents
+    for (const sa of db.sales_agents || []) {
+      await client.query(
+        `INSERT INTO sales_agents (id, name, email, phone, promo_code, discount_percent, status, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (id) DO UPDATE SET
+           name = EXCLUDED.name,
+           email = EXCLUDED.email,
+           phone = EXCLUDED.phone,
+           promo_code = EXCLUDED.promo_code,
+           discount_percent = EXCLUDED.discount_percent,
+           status = EXCLUDED.status,
+           notes = EXCLUDED.notes,
+           updated_at = EXCLUDED.updated_at`,
+        [
+          sa.id,
+          sa.name,
+          sa.email,
+          sa.phone || '',
+          sa.promo_code,
+          sa.discount_percent,
+          sa.status,
+          sa.notes || '',
+          sa.created_at,
+          sa.updated_at,
+        ]
+      );
+    }
+
+    // 7C. Promo Codes
+    for (const pc of db.promo_codes || []) {
+      await client.query(
+        `INSERT INTO promo_codes (
+           id, code, code_type, agent_id, description, discount_percent, min_purchase_paise,
+           max_uses, current_uses, applicable_subject_ids, starts_at, expires_at, is_active, created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)
+         ON CONFLICT (id) DO UPDATE SET
+           code = EXCLUDED.code,
+           code_type = EXCLUDED.code_type,
+           agent_id = EXCLUDED.agent_id,
+           description = EXCLUDED.description,
+           discount_percent = EXCLUDED.discount_percent,
+           min_purchase_paise = EXCLUDED.min_purchase_paise,
+           max_uses = EXCLUDED.max_uses,
+           current_uses = EXCLUDED.current_uses,
+           applicable_subject_ids = EXCLUDED.applicable_subject_ids,
+           starts_at = EXCLUDED.starts_at,
+           expires_at = EXCLUDED.expires_at,
+           is_active = EXCLUDED.is_active,
+           updated_at = EXCLUDED.updated_at`,
+        [
+          pc.id,
+          pc.code,
+          pc.code_type,
+          pc.agent_id || null,
+          pc.description || '',
+          pc.discount_percent,
+          pc.min_purchase_paise || 0,
+          pc.max_uses ?? null,
+          pc.current_uses || 0,
+          JSON.stringify(pc.applicable_subject_ids || []),
+          pc.starts_at || null,
+          pc.expires_at || null,
+          pc.is_active,
+          pc.created_at,
+          pc.updated_at,
+        ]
+      );
+    }
+
+    // 7D. Referral Settings (Singleton id = 1)
+    if (db.referral_settings) {
+      await client.query(
+        `INSERT INTO referral_settings (
+           id, is_enabled, friend_discount_percent, referrer_reward_percent,
+           min_purchase_paise, reward_expiry_days, updated_at, updated_by
+         ) VALUES (1, $1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (id) DO UPDATE SET
+           is_enabled = EXCLUDED.is_enabled,
+           friend_discount_percent = EXCLUDED.friend_discount_percent,
+           referrer_reward_percent = EXCLUDED.referrer_reward_percent,
+           min_purchase_paise = EXCLUDED.min_purchase_paise,
+           reward_expiry_days = EXCLUDED.reward_expiry_days,
+           updated_at = EXCLUDED.updated_at,
+           updated_by = EXCLUDED.updated_by`,
+        [
+          db.referral_settings.is_enabled,
+          db.referral_settings.friend_discount_percent,
+          db.referral_settings.referrer_reward_percent,
+          db.referral_settings.min_purchase_paise,
+          db.referral_settings.reward_expiry_days ?? null,
+          db.referral_settings.updated_at,
+          db.referral_settings.updated_by || 'system',
+        ]
+      );
+    }
+
     // 8. Payment Orders
     for (const po of db.payment_orders) {
       await client.query(
-        `INSERT INTO payment_orders (id, user_id, package_id, subject_id, gateway, gateway_order_id, expected_amount_paise, currency, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `INSERT INTO payment_orders (
+           id, user_id, package_id, subject_id, gateway, gateway_order_id,
+           expected_amount_paise, original_amount_paise, discount_amount_paise, final_amount_paise,
+           promo_code, promo_type, agent_id, referrer_user_id, reward_status,
+           currency, status, created_at, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
          ON CONFLICT (id) DO UPDATE SET
            status = EXCLUDED.status,
+           reward_status = EXCLUDED.reward_status,
            updated_at = EXCLUDED.updated_at`,
         [
           po.id,
@@ -421,6 +542,14 @@ export async function syncDatabaseToPostgres(
           po.gateway,
           po.gateway_order_id,
           po.expected_amount_paise,
+          po.original_amount_paise ?? po.expected_amount_paise,
+          po.discount_amount_paise ?? 0,
+          po.final_amount_paise ?? po.expected_amount_paise,
+          po.promo_code || null,
+          po.promo_type || null,
+          po.agent_id || null,
+          po.referrer_user_id || null,
+          po.reward_status || 'none',
           po.currency,
           po.status,
           po.created_at,
@@ -457,11 +586,24 @@ export async function syncDatabaseToPostgres(
     // 10. Purchases / Entitlements
     for (const pur of db.purchases) {
       await client.query(
-        `INSERT INTO purchases (id, user_id, package_id, subject_id, payment_transaction_id, entitlement_status, purchased_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `INSERT INTO purchases (
+           id, user_id, package_id, subject_id, payment_transaction_id, entitlement_status,
+           original_amount_paise, discount_amount_paise, final_amount_paise,
+           promo_code, promo_type, agent_id, referrer_user_id, reward_status,
+           purchased_at, created_at, updated_at
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          ON CONFLICT (user_id, subject_id) DO UPDATE SET
            entitlement_status = EXCLUDED.entitlement_status,
            payment_transaction_id = EXCLUDED.payment_transaction_id,
+           original_amount_paise = EXCLUDED.original_amount_paise,
+           discount_amount_paise = EXCLUDED.discount_amount_paise,
+           final_amount_paise = EXCLUDED.final_amount_paise,
+           promo_code = EXCLUDED.promo_code,
+           promo_type = EXCLUDED.promo_type,
+           agent_id = EXCLUDED.agent_id,
+           referrer_user_id = EXCLUDED.referrer_user_id,
+           reward_status = EXCLUDED.reward_status,
            updated_at = EXCLUDED.updated_at`,
         [
           pur.id,
@@ -470,9 +612,79 @@ export async function syncDatabaseToPostgres(
           pur.subject_id,
           pur.payment_transaction_id,
           pur.entitlement_status,
+          pur.original_amount_paise ?? null,
+          pur.discount_amount_paise ?? 0,
+          pur.final_amount_paise ?? null,
+          pur.promo_code || null,
+          pur.promo_type || null,
+          pur.agent_id || null,
+          pur.referrer_user_id || null,
+          pur.reward_status || 'none',
           pur.purchased_at,
           pur.created_at,
           pur.updated_at,
+        ]
+      );
+    }
+
+    // 10B. Student Referral Attributions
+    for (const ra of db.referral_attributions || []) {
+      await client.query(
+        `INSERT INTO referral_attributions (
+           id, referrer_user_id, referred_user_id, referral_code, status,
+           order_id, purchase_id, subject_id, original_amount_paise,
+           friend_discount_paise, referrer_reward_paise, rewarded_at, reversed_at,
+           created_at, updated_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+         ON CONFLICT (referred_user_id) DO UPDATE SET
+           status = EXCLUDED.status,
+           order_id = EXCLUDED.order_id,
+           purchase_id = EXCLUDED.purchase_id,
+           subject_id = EXCLUDED.subject_id,
+           original_amount_paise = EXCLUDED.original_amount_paise,
+           friend_discount_paise = EXCLUDED.friend_discount_paise,
+           referrer_reward_paise = EXCLUDED.referrer_reward_paise,
+           rewarded_at = EXCLUDED.rewarded_at,
+           reversed_at = EXCLUDED.reversed_at,
+           updated_at = EXCLUDED.updated_at`,
+        [
+          ra.id,
+          ra.referrer_user_id,
+          ra.referred_user_id,
+          ra.referral_code,
+          ra.status,
+          ra.order_id || null,
+          ra.purchase_id || null,
+          ra.subject_id || null,
+          ra.original_amount_paise || 0,
+          ra.friend_discount_paise || 0,
+          ra.referrer_reward_paise || 0,
+          ra.rewarded_at || null,
+          ra.reversed_at || null,
+          ra.created_at,
+          ra.updated_at,
+        ]
+      );
+    }
+
+    // 10C. Wallet Transactions Ledger
+    for (const wt of db.wallet_transactions || []) {
+      await client.query(
+        `INSERT INTO wallet_transactions (
+           id, user_id, transaction_type, amount_paise, balance_after_paise,
+           reference_type, reference_id, description, created_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (transaction_type, reference_id) DO NOTHING`,
+        [
+          wt.id,
+          wt.user_id,
+          wt.transaction_type,
+          wt.amount_paise,
+          wt.balance_after_paise,
+          wt.reference_type,
+          wt.reference_id,
+          wt.description,
+          wt.created_at,
         ]
       );
     }

@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { apiRequest, formatPaiseToINR } from '../../api/client.ts';
+import { useAuth } from '../../context/AuthContext.tsx';
 import {
   LayoutDashboard,
   BookOpen,
@@ -11,10 +13,10 @@ import {
   Unlock,
   IndianRupee,
   Users,
-  ShoppingBag,
   CreditCard,
   BarChart3,
   Settings,
+  LogOut,
   Plus,
   Download,
   Upload,
@@ -22,7 +24,12 @@ import {
   AlertTriangle,
   Trash2,
   Edit3,
-  ShieldCheck,
+  KeyRound,
+  Database,
+  Search,
+  Eye,
+  X,
+  Gift,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -33,6 +40,7 @@ import {
   Tooltip,
   CartesianGrid,
 } from 'recharts';
+import { AdminMarketingReferralsModule } from './AdminMarketingReferralsModule.tsx';
 
 type AdminTab =
   | 'overview'
@@ -44,8 +52,8 @@ type AdminTab =
   | 'free_tests'
   | 'pricing'
   | 'students'
-  | 'purchases'
-  | 'payments'
+  | 'purchases_payments'
+  | 'marketing_referrals'
   | 'reports'
   | 'settings';
 
@@ -53,19 +61,21 @@ const NAV_ITEMS: Array<{ id: AdminTab; label: string; icon: React.FC<{ className
   { id: 'overview', label: '1. Overview', icon: LayoutDashboard },
   { id: 'subjects', label: '2. Subjects', icon: BookOpen },
   { id: 'categories', label: '3. Test Categories', icon: Layers },
-  { id: 'tests', label: '4. Test Management', icon: FileCheck },
-  { id: 'questions', label: '5. Question Bank', icon: HelpCircle },
+  { id: 'tests', label: '4. Tests', icon: FileCheck },
+  { id: 'questions', label: '5. Questions', icon: HelpCircle },
   { id: 'excel', label: '6. Excel Upload', icon: FileSpreadsheet },
-  { id: 'free_tests', label: '7. Free Test Config', icon: Unlock },
-  { id: 'pricing', label: '8. Series Pricing', icon: IndianRupee },
+  { id: 'free_tests', label: '7. Free Test Configuration', icon: Unlock },
+  { id: 'pricing', label: '8. Subject Pricing', icon: IndianRupee },
   { id: 'students', label: '9. Students', icon: Users },
-  { id: 'purchases', label: '10. Purchases', icon: ShoppingBag },
-  { id: 'payments', label: '11. Payments', icon: CreditCard },
+  { id: 'purchases_payments', label: '10. Purchases & Payments', icon: CreditCard },
+  { id: 'marketing_referrals', label: '11. Marketing & Referrals', icon: Gift },
   { id: 'reports', label: '12. Reports', icon: BarChart3 },
-  { id: 'settings', label: '13. Settings & Audit', icon: Settings },
+  { id: 'settings', label: '13. Settings', icon: Settings },
 ];
 
 export const AdminDashboardPage: React.FC = () => {
+  const { profile, logout, changePassword, refreshProfile } = useAuth();
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [bannerMsg, setBannerMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
@@ -79,10 +89,29 @@ export const AdminDashboardPage: React.FC = () => {
   const [packages, setPackages] = useState<any[]>([]);
   const [freeConfigData, setFreeConfigData] = useState<any>(null);
   const [students, setStudents] = useState<any[]>([]);
+  const [studentSearch, setStudentSearch] = useState<string>('');
+  const [inspectedStudentData, setInspectedStudentData] = useState<any | null>(null);
   const [purchases, setPurchases] = useState<any[]>([]);
   const [payments, setPayments] = useState<any>(null);
   const [auditData, setAuditData] = useState<any>(null);
-  const [invariantReport, setInvariantReport] = useState<any>(null);
+  const [settingsData, setSettingsData] = useState<any>(null);
+
+  // Admin Password Change Form State
+  const [passwordForm, setPasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
+  const [updatingPassword, setUpdatingPassword] = useState(false);
+  const [adminDisplayName, setAdminDisplayName] = useState(profile?.full_name || 'Prime Seven');
+
+  // Confirmation Modal State
+  const [confirmDialog, setConfirmDialog] = useState<{
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => Promise<void>;
+  } | null>(null);
 
   // Filters & Form States
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<string>('');
@@ -166,7 +195,13 @@ export const AdminDashboardPage: React.FC = () => {
   }, [loadCoreData]);
 
   useEffect(() => {
-    if (activeTab === 'students' || activeTab === 'purchases') {
+    if (profile?.full_name) {
+      setAdminDisplayName(profile.full_name);
+    }
+  }, [profile?.full_name]);
+
+  useEffect(() => {
+    if (activeTab === 'students' || activeTab === 'purchases_payments') {
       apiRequest('/api/v1/admin/students')
         .then((r) => {
           setStudents(r.students || []);
@@ -176,19 +211,23 @@ export const AdminDashboardPage: React.FC = () => {
         })
         .catch(() => {});
     }
-    if (activeTab === 'purchases') {
+    if (activeTab === 'purchases_payments') {
       apiRequest('/api/v1/admin/purchases')
         .then((r) => setPurchases(r.purchases || []))
         .catch(() => {});
-    }
-    if (activeTab === 'payments') {
       apiRequest('/api/v1/admin/payments')
         .then(setPayments)
         .catch(() => {});
     }
     if (activeTab === 'settings') {
-      apiRequest('/api/v1/admin/audit-logs')
-        .then(setAuditData)
+      Promise.all([
+        apiRequest('/api/v1/admin/audit-logs'),
+        apiRequest('/api/v1/admin/settings'),
+      ])
+        .then(([aud, cfg]) => {
+          setAuditData(aud);
+          setSettingsData(cfg);
+        })
         .catch(() => {});
     }
   }, [activeTab, manualEntForm.user_id]);
@@ -320,14 +359,110 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
-  const handleDeleteQuestion = async (qId: string) => {
+  const handleDeleteQuestion = (q: any) => {
+    setConfirmDialog({
+      title: `Delete Question #${q.display_order}?`,
+      message: `Are you sure you want to delete Question #${q.display_order} ("${q.question_text.slice(0, 80)}...")? Total test marks will be recalculated automatically.`,
+      confirmLabel: 'Delete Question',
+      onConfirm: async () => {
+        try {
+          await apiRequest(`/api/v1/admin/questions/${q.id}`, { method: 'DELETE' });
+          notify('success', 'Question deleted.');
+          await loadQuestionsForTest(qbTestId);
+          await loadCoreData();
+        } catch (err: any) {
+          notify('error', err.message || 'Could not delete question.');
+        }
+      },
+    });
+  };
+
+  const handleDeleteOrArchiveTest = (t: any) => {
+    setConfirmDialog({
+      title: `Delete or Archive "${t.title}"?`,
+      message:
+        'If students have already attempted this test, it will be safely unpublished to preserve student results. Otherwise, the test and its questions will be permanently removed.',
+      confirmLabel: 'Confirm Remove / Archive',
+      onConfirm: async () => {
+        try {
+          const res = await apiRequest(`/api/v1/admin/tests/${t.id}`, { method: 'DELETE' });
+          if (res.archived) {
+            notify('success', res.message || `Unpublished test "${t.title}".`);
+          } else {
+            notify('success', `Deleted test "${t.title}".`);
+          }
+          await loadCoreData();
+        } catch (err: any) {
+          notify('error', err.message || 'Could not remove test.');
+        }
+      },
+    });
+  };
+
+  const handleInspectStudent = async (studentId: string) => {
     try {
-      await apiRequest(`/api/v1/admin/questions/${qId}`, { method: 'DELETE' });
-      notify('success', 'Question deleted.');
-      await loadQuestionsForTest(qbTestId);
-      await loadCoreData();
+      const res = await apiRequest(`/api/v1/admin/students/${studentId}/attempts`);
+      setInspectedStudentData(res);
     } catch (err: any) {
-      notify('error', err.message || 'Could not delete question.');
+      notify('error', err.message || 'Could not load student details.');
+    }
+  };
+
+  const handleAdminPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (passwordForm.new_password.length < 8) {
+      notify('error', 'New password must be at least 8 characters.');
+      return;
+    }
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      notify('error', 'New password and confirmation do not match.');
+      return;
+    }
+
+    setUpdatingPassword(true);
+    try {
+      const res = await changePassword(
+        passwordForm.current_password,
+        passwordForm.new_password,
+        passwordForm.confirm_password
+      );
+      if (res.success) {
+        notify('success', 'Administrator password updated.');
+        setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        const [aud, cfg] = await Promise.all([
+          apiRequest('/api/v1/admin/audit-logs'),
+          apiRequest('/api/v1/admin/settings'),
+        ]);
+        setAuditData(aud);
+        setSettingsData(cfg);
+      } else {
+        notify('error', res.error || 'Failed to update password.');
+      }
+    } finally {
+      setUpdatingPassword(false);
+    }
+  };
+
+  const handleSaveAdminProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await apiRequest('/api/v1/auth/profile', {
+        method: 'PUT',
+        body: JSON.stringify({ full_name: adminDisplayName.trim() }),
+      });
+      await refreshProfile();
+      notify('success', 'Administrator display name updated.');
+    } catch (err: any) {
+      notify('error', err.message || 'Could not update administrator display name.');
+    }
+  };
+
+  const handleRunDbMigrations = async () => {
+    try {
+      const res = await apiRequest('/api/v1/admin/migrations/run', { method: 'POST' });
+      notify('success', res.message || 'Database migrations and catalogue sync verified.');
+    } catch (err: any) {
+      notify('error', err.message || 'Database migration check failed.');
     }
   };
 
@@ -488,59 +623,96 @@ export const AdminDashboardPage: React.FC = () => {
     }
   };
 
-  const handleRunInvariantsCheck = async () => {
-    try {
-      const report = await apiRequest('/api/v1/admin/verify-invariants', { method: 'POST' });
-      setInvariantReport(report);
-      notify('success', 'Executed platform business and security invariant verification suite.');
-    } catch (err: any) {
-      notify('error', err.message || 'Verification check failed.');
-    }
-  };
-
   const filteredAdminTests = tests.filter((t) => {
     if (selectedSubjectFilter && t.subject_id !== selectedSubjectFilter) return false;
     if (selectedCategoryFilter && t.category_slug !== selectedCategoryFilter) return false;
     return true;
   });
 
+  const filteredStudents = students.filter((u) => {
+    if (!studentSearch.trim()) return true;
+    const q = studentSearch.toLowerCase().trim();
+    return (
+      u.full_name?.toLowerCase().includes(q) ||
+      u.email?.toLowerCase().includes(q) ||
+      u.role?.toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div className="min-h-[calc(100vh-65px)] flex flex-col lg:flex-row bg-slate-50">
       {/* Desktop Sidebar Navigation (260px) */}
-      <aside className="lg:w-64 shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200">
-        <div className="p-5 border-b border-slate-100">
-          <p className="text-[11px] font-mono font-semibold text-blue-700 uppercase">
-            ADMINISTRATION CONSOLE
-          </p>
-          <h2 className="mt-0.5 text-base font-bold text-slate-900 font-display">
-            PrimePrep Governance
-          </h2>
-        </div>
+      <aside className="lg:w-64 shrink-0 bg-white border-b lg:border-b-0 lg:border-r border-slate-200 flex flex-col justify-between">
+        <div>
+          <div className="p-5 border-b border-slate-100">
+            <p className="text-[11px] font-mono font-semibold text-blue-700 uppercase">
+              ADMINISTRATION CONSOLE
+            </p>
+            <h2 className="mt-0.5 text-base font-bold text-slate-900 font-display truncate">
+              {profile?.full_name || 'Prime Seven'}
+            </h2>
+            <p className="text-xs text-slate-500 font-mono truncate">
+              {profile?.email || 'primeseven@gmail.com'}
+            </p>
+          </div>
 
-        <nav className="p-3 flex lg:flex-col gap-1 overflow-x-auto">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = activeTab === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                className={`flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  active
-                    ? 'bg-slate-900 text-white font-semibold'
-                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
+          <nav className="p-3 flex lg:flex-col gap-1 overflow-x-auto">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  className={`flex items-center gap-2.5 px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    active
+                      ? 'bg-slate-900 text-white font-semibold'
+                      : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+
+            <button
+              onClick={async () => {
+                await logout();
+                navigate('/login');
+              }}
+              className="flex items-center gap-2.5 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer lg:mt-2 lg:border-t lg:border-slate-100 lg:pt-3"
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              <span>13. Logout</span>
+            </button>
+          </nav>
+        </div>
       </aside>
 
       {/* Main Content Viewport */}
       <main className="flex-1 p-6 sm:p-8 max-w-6xl">
+        {profile?.must_change_password && (
+          <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5 text-xs text-amber-900">
+              <KeyRound className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">Security Notice: Initial Password Active</p>
+                <p className="mt-0.5">
+                  Your official administrator account was initialized from the bootstrap environment
+                  variable. Please set a permanent password in Settings.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className="px-3.5 py-2 text-xs font-semibold text-white bg-amber-700 hover:bg-amber-800 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              Change Password Now
+            </button>
+          </div>
+        )}
+
         {bannerMsg && (
           <div
             className={`mb-6 p-4 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
@@ -931,28 +1103,47 @@ export const AdminDashboardPage: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3 px-4 text-right">
-                          <button
-                            onClick={() => {
-                              setEditingTest(t);
-                              setTestForm({
-                                subject_id: t.subject_id,
-                                category_slug: t.category_slug,
-                                title: t.title,
-                                test_number: t.test_number,
-                                description: t.description,
-                                duration_minutes: t.duration_minutes,
-                                positive_marks: t.positive_marks,
-                                negative_marks: t.negative_marks,
-                                publication_status: t.publication_status,
-                                display_order: t.display_order,
-                              });
-                              setShowTestModal(true);
-                            }}
-                            className="inline-flex items-center gap-1 text-blue-700 font-semibold hover:underline cursor-pointer"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                            <span>Edit</span>
-                          </button>
+                          <div className="inline-flex items-center gap-3">
+                            <button
+                              onClick={() => {
+                                setQbSubjectId(t.subject_id);
+                                setQbTestId(t.id);
+                                setActiveTab('questions');
+                              }}
+                              className="text-slate-700 font-semibold hover:underline cursor-pointer"
+                            >
+                              Questions
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingTest(t);
+                                setTestForm({
+                                  subject_id: t.subject_id,
+                                  category_slug: t.category_slug,
+                                  title: t.title,
+                                  test_number: t.test_number,
+                                  description: t.description,
+                                  duration_minutes: t.duration_minutes,
+                                  positive_marks: t.positive_marks,
+                                  negative_marks: t.negative_marks,
+                                  publication_status: t.publication_status,
+                                  display_order: t.display_order,
+                                });
+                                setShowTestModal(true);
+                              }}
+                              className="inline-flex items-center gap-1 text-blue-700 font-semibold hover:underline cursor-pointer"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteOrArchiveTest(t)}
+                              className="inline-flex items-center gap-1 text-red-600 font-semibold hover:underline cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -1394,7 +1585,7 @@ export const AdminDashboardPage: React.FC = () => {
                         Edit
                       </button>
                       <button
-                        onClick={() => handleDeleteQuestion(q.id)}
+                        onClick={() => handleDeleteQuestion(q)}
                         className="text-red-600 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -1762,281 +1953,419 @@ export const AdminDashboardPage: React.FC = () => {
         ================================================================== */}
         {activeTab === 'students' && (
           <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 font-display">
-                Registered Students & Account Status
-              </h1>
-              <p className="text-xs text-slate-600 mt-1">
-                Monitor registered candidates, unlocked subject entitlements, and examination
-                attempts.
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
-                    <th className="py-3 px-4 font-semibold">Full Name</th>
-                    <th className="py-3 px-4 font-semibold">Email</th>
-                    <th className="py-3 px-4 font-semibold">Role</th>
-                    <th className="py-3 px-4 font-semibold">Unlocked Subjects</th>
-                    <th className="py-3 px-4 font-semibold text-right">Attempts</th>
-                    <th className="py-3 px-4 font-semibold">Status</th>
-                    <th className="py-3 px-4 font-semibold text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {students.map((u) => (
-                    <tr key={u.id}>
-                      <td className="py-3 px-4 font-semibold text-slate-900">{u.full_name}</td>
-                      <td className="py-3 px-4 font-mono text-slate-600">{u.email}</td>
-                      <td className="py-3 px-4 font-mono uppercase">{u.role}</td>
-                      <td className="py-3 px-4">
-                        {u.purchased_subjects?.length > 0
-                          ? u.purchased_subjects.join(', ')
-                          : 'None'}
-                      </td>
-                      <td className="py-3 px-4 text-right font-mono font-bold">
-                        {u.attempts_count}
-                      </td>
-                      <td className="py-3 px-4">
-                        <span
-                          className={`font-semibold ${
-                            u.account_status === 'active' ? 'text-emerald-700' : 'text-red-600'
-                          }`}
-                        >
-                          {u.account_status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={async () => {
-                            const nextStatus =
-                              u.account_status === 'active' ? 'suspended' : 'active';
-                            await apiRequest(`/api/v1/admin/students/${u.id}/status`, {
-                              method: 'PUT',
-                              body: JSON.stringify({ account_status: nextStatus }),
-                            });
-                            const r = await apiRequest('/api/v1/admin/students');
-                            setStudents(r.students || []);
-                            notify('success', `Updated account status to ${nextStatus}.`);
-                          }}
-                          className="text-blue-700 font-semibold hover:underline cursor-pointer"
-                        >
-                          {u.account_status === 'active' ? 'Suspend' : 'Activate'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ==================================================================
-            MODULE 10: PURCHASES & MANUAL ENTITLEMENT AUDIT
-        ================================================================== */}
-        {activeTab === 'purchases' && (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 font-display">
-                Subject-Series Entitlements & Audited Corrections
-              </h1>
-              <p className="text-xs text-slate-600 mt-1">
-                View active subject entitlements or perform an audited manual entitlement
-                correction with a mandatory reason.
-              </p>
-            </div>
-
-            <form
-              onSubmit={handleManualEntitlementSubmit}
-              className="bg-white border border-slate-200 rounded-xl p-5 grid grid-cols-1 sm:grid-cols-5 gap-3 items-end text-xs"
-            >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <label className="block font-semibold text-slate-600 mb-1">Student</label>
-                <select
-                  value={manualEntForm.user_id}
-                  onChange={(e) => setManualEntForm({ ...manualEntForm, user_id: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                >
-                  {students.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.full_name} ({s.email})
-                    </option>
-                  ))}
-                </select>
+                <h1 className="text-2xl font-bold text-slate-900 font-display">
+                  Registered Students & Account Status ({filteredStudents.length})
+                </h1>
+                <p className="text-xs text-slate-600 mt-1">
+                  Search registered candidates, inspect their subject entitlements and test
+                  attempts, or manage account status.
+                </p>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1">Subject</label>
-                <select
-                  value={manualEntForm.subject_id}
-                  onChange={(e) =>
-                    setManualEntForm({ ...manualEntForm, subject_id: e.target.value })
-                  }
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                >
-                  {subjects.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1">Action</label>
-                <select
-                  value={manualEntForm.action}
-                  onChange={(e) => setManualEntForm({ ...manualEntForm, action: e.target.value })}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-                >
-                  <option value="grant">Grant Entitlement</option>
-                  <option value="revoke">Revoke Entitlement</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-600 mb-1">
-                  Mandatory Audit Reason
-                </label>
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  required
-                  minLength={5}
-                  value={manualEntForm.reason}
-                  onChange={(e) => setManualEntForm({ ...manualEntForm, reason: e.target.value })}
-                  placeholder="Scholarship / support ticket #..."
-                  className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  value={studentSearch}
+                  onChange={(e) => setStudentSearch(e.target.value)}
+                  placeholder="Search by name or email..."
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:border-blue-600"
                 />
               </div>
-
-              <button
-                type="submit"
-                className="py-2 px-4 font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
-              >
-                Apply Audited Action
-              </button>
-            </form>
-
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
-                    <th className="py-3 px-4 font-semibold">Student</th>
-                    <th className="py-3 px-4 font-semibold">Subject Package</th>
-                    <th className="py-3 px-4 font-semibold">Transaction Ref</th>
-                    <th className="py-3 px-4 font-semibold text-right">Amount</th>
-                    <th className="py-3 px-4 font-semibold">Status</th>
-                    <th className="py-3 px-4 font-semibold">Date</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {purchases.map((p) => (
-                    <tr key={p.id}>
-                      <td className="py-3 px-4">
-                        <p className="font-semibold text-slate-900">{p.student_name}</p>
-                        <p className="text-slate-500">{p.student_email}</p>
-                      </td>
-                      <td className="py-3 px-4 font-semibold text-slate-800">{p.subject_name}</td>
-                      <td className="py-3 px-4 font-mono text-slate-600">{p.gateway_payment_id}</td>
-                      <td className="py-3 px-4 text-right font-mono font-bold">
-                        {formatPaiseToINR(p.amount_paise)}
-                      </td>
-                      <td className="py-3 px-4">
-                        <span
-                          className={`font-semibold ${
-                            p.entitlement_status === 'active' ? 'text-emerald-700' : 'text-red-600'
-                          }`}
-                        >
-                          {p.entitlement_status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 font-mono text-slate-600">
-                        {new Date(p.purchased_at).toLocaleDateString('en-IN')}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {/* ==================================================================
-            MODULE 11: PAYMENTS & TRANSACTIONS
-        ================================================================== */}
-        {activeTab === 'payments' && payments && (
-          <div className="space-y-6">
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900 font-display">
-                Gateway Orders & Payment Transactions Ledger
-              </h1>
-              <p className="text-xs text-slate-600 mt-1">
-                Immutable gateway transaction records. Administrators cannot casually edit a failed
-                or pending gateway transaction to mark it successful.
-              </p>
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
-                    <th className="py-3 px-4 font-semibold">Student</th>
-                    <th className="py-3 px-4 font-semibold">Subject</th>
-                    <th className="py-3 px-4 font-semibold">Gateway Order ID</th>
-                    <th className="py-3 px-4 font-semibold">Gateway Payment ID</th>
-                    <th className="py-3 px-4 font-semibold text-right">Amount</th>
-                    <th className="py-3 px-4 font-semibold">Payment Status</th>
-                    <th className="py-3 px-4 font-semibold">Verification</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {payments.transactions.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="py-8 text-center text-slate-500">
-                        No payment transactions recorded yet.
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                      <th className="py-3 px-4 font-semibold">Full Name</th>
+                      <th className="py-3 px-4 font-semibold">Email</th>
+                      <th className="py-3 px-4 font-semibold">Role</th>
+                      <th className="py-3 px-4 font-semibold">Unlocked Subjects</th>
+                      <th className="py-3 px-4 font-semibold text-right">Attempts</th>
+                      <th className="py-3 px-4 font-semibold">Status</th>
+                      <th className="py-3 px-4 font-semibold text-right">Actions</th>
                     </tr>
-                  ) : (
-                    payments.transactions.map((t: any) => (
-                      <tr key={t.id}>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredStudents.map((u) => (
+                      <tr key={u.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4 font-semibold text-slate-900">{u.full_name}</td>
+                        <td className="py-3 px-4 font-mono text-slate-600">{u.email}</td>
+                        <td className="py-3 px-4 font-mono uppercase">{u.role}</td>
                         <td className="py-3 px-4">
-                          <p className="font-semibold text-slate-900">{t.student_name}</p>
-                          <p className="text-slate-500">{t.student_email}</p>
+                          {u.purchased_subjects?.length > 0
+                            ? u.purchased_subjects.join(', ')
+                            : 'None'}
                         </td>
-                        <td className="py-3 px-4 font-medium">{t.subject_name}</td>
-                        <td className="py-3 px-4 font-mono">{t.gateway_order_id}</td>
-                        <td className="py-3 px-4 font-mono">{t.gateway_payment_id}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold tabular-nums">
-                          {formatPaiseToINR(t.amount_paise)} ({t.amount_paise}p)
+                        <td className="py-3 px-4 text-right font-mono font-bold">
+                          {u.attempts_count}
                         </td>
-                        <td className="py-3 px-4 font-mono uppercase">{t.payment_status}</td>
                         <td className="py-3 px-4">
                           <span
                             className={`font-semibold ${
-                              t.verification_status === 'verified'
-                                ? 'text-emerald-700'
-                                : t.verification_status === 'pending'
-                                ? 'text-amber-700'
-                                : 'text-red-600'
+                              u.account_status === 'active' ? 'text-emerald-700' : 'text-red-600'
                             }`}
                           >
-                            {t.verification_status}
+                            {u.account_status}
                           </span>
                         </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex items-center gap-3">
+                            <button
+                              onClick={() => handleInspectStudent(u.id)}
+                              className="inline-flex items-center gap-1 text-slate-700 font-semibold hover:underline cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Inspect</span>
+                            </button>
+                            {u.role !== 'admin' && (
+                              <button
+                                onClick={async () => {
+                                  const nextStatus =
+                                    u.account_status === 'active' ? 'suspended' : 'active';
+                                  try {
+                                    await apiRequest(`/api/v1/admin/students/${u.id}/status`, {
+                                      method: 'PUT',
+                                      body: JSON.stringify({ account_status: nextStatus }),
+                                    });
+                                    const r = await apiRequest('/api/v1/admin/students');
+                                    setStudents(r.students || []);
+                                    notify('success', `Updated account status to ${nextStatus}.`);
+                                  } catch (err: any) {
+                                    notify('error', err.message || 'Could not update status.');
+                                  }
+                                }}
+                                className="text-blue-700 font-semibold hover:underline cursor-pointer"
+                              >
+                                {u.account_status === 'active' ? 'Suspend' : 'Activate'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
+
+            {inspectedStudentData && (
+              <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+                <div className="bg-white border border-slate-200 rounded-2xl max-w-2xl w-full p-6 space-y-5 shadow-xl max-h-[85vh] overflow-y-auto">
+                  <div className="flex items-center justify-between border-b border-slate-200 pb-4">
+                    <div>
+                      <p className="text-xs font-mono text-blue-700 uppercase">
+                        CANDIDATE RECORD INSPECTION
+                      </p>
+                      <h3 className="text-lg font-bold text-slate-900 font-display">
+                        {inspectedStudentData.student.full_name} (
+                        {inspectedStudentData.student.email})
+                      </h3>
+                    </div>
+                    <button
+                      onClick={() => setInspectedStudentData(null)}
+                      className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 uppercase mb-2">
+                      Subject Package Entitlements ({inspectedStudentData.purchases.length})
+                    </h4>
+                    {inspectedStudentData.purchases.length === 0 ? (
+                      <p className="text-xs text-slate-500">No subject packages unlocked yet.</p>
+                    ) : (
+                      <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl text-xs">
+                        {inspectedStudentData.purchases.map((p: any) => (
+                          <div key={p.id} className="p-3 flex items-center justify-between">
+                            <div>
+                              <span className="font-semibold text-slate-900">
+                                {p.subject_name}
+                              </span>
+                              <span className="text-slate-500 ml-2">({p.package_name})</span>
+                            </div>
+                            <span
+                              className={`font-mono font-bold uppercase ${
+                                p.entitlement_status === 'active'
+                                  ? 'text-emerald-700'
+                                  : 'text-red-600'
+                              }`}
+                            >
+                              {p.entitlement_status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 uppercase mb-2">
+                      Examination Attempts ({inspectedStudentData.attempts.length})
+                    </h4>
+                    {inspectedStudentData.attempts.length === 0 ? (
+                      <p className="text-xs text-slate-500">No examinations attempted yet.</p>
+                    ) : (
+                      <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl text-xs">
+                        {inspectedStudentData.attempts.map((a: any) => (
+                          <div key={a.id} className="p-3 flex items-center justify-between">
+                            <div>
+                              <p className="font-semibold text-slate-900">{a.test_title}</p>
+                              <p className="text-slate-500">
+                                {a.subject_name} · Status: {a.status}
+                              </p>
+                            </div>
+                            <div className="text-right font-mono">
+                              <p className="font-bold text-slate-900">
+                                {a.total_score} / {a.maximum_marks}
+                              </p>
+                              <p className="text-slate-500">
+                                +{a.positive_marks_total} / -{a.negative_marks_total}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* ==================================================================
-            MODULE 12: REPORTS
+            MODULE 10: PURCHASES & PAYMENTS
+        ================================================================== */}
+        {activeTab === 'purchases_payments' && (
+          <div className="space-y-8">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 font-display">
+                Purchases, Entitlements & Payment Transactions
+              </h1>
+              <p className="text-xs text-slate-600 mt-1">
+                Manage subject-series entitlements with mandatory audit logging and inspect
+                cryptographically verified Razorpay payment transactions.
+              </p>
+            </div>
+
+            {/* Audited Manual Entitlement Form */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+              <h2 className="text-sm font-bold text-slate-900 font-display">
+                Manual Entitlement Grant / Revoke (Audited Administrative Action)
+              </h2>
+              <form
+                onSubmit={handleManualEntitlementSubmit}
+                className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end text-xs"
+              >
+                <div>
+                  <label className="block font-semibold text-slate-600 mb-1">Student</label>
+                  <select
+                    value={manualEntForm.user_id}
+                    onChange={(e) =>
+                      setManualEntForm({ ...manualEntForm, user_id: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  >
+                    {students.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.full_name} ({s.email})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-600 mb-1">Subject</label>
+                  <select
+                    value={manualEntForm.subject_id}
+                    onChange={(e) =>
+                      setManualEntForm({ ...manualEntForm, subject_id: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  >
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-600 mb-1">Action</label>
+                  <select
+                    value={manualEntForm.action}
+                    onChange={(e) => setManualEntForm({ ...manualEntForm, action: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  >
+                    <option value="grant">Grant Entitlement</option>
+                    <option value="revoke">Revoke Entitlement</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-600 mb-1">
+                    Mandatory Audit Reason
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={5}
+                    value={manualEntForm.reason}
+                    onChange={(e) => setManualEntForm({ ...manualEntForm, reason: e.target.value })}
+                    placeholder="Scholarship / support ticket #..."
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="py-2 px-4 font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                >
+                  Apply Audited Action
+                </button>
+              </form>
+            </div>
+
+            {/* Active & Historical Purchases Table */}
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-200">
+                <h2 className="text-sm font-bold text-slate-900 font-display">
+                  Subject-Series Entitlements ({purchases.length})
+                </h2>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                      <th className="py-3 px-4 font-semibold">Student</th>
+                      <th className="py-3 px-4 font-semibold">Subject Package</th>
+                      <th className="py-3 px-4 font-semibold">Transaction Ref</th>
+                      <th className="py-3 px-4 font-semibold text-right">Amount</th>
+                      <th className="py-3 px-4 font-semibold">Status</th>
+                      <th className="py-3 px-4 font-semibold">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {purchases.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-8 text-center text-slate-500">
+                          No subject entitlements recorded yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      purchases.map((p) => (
+                        <tr key={p.id}>
+                          <td className="py-3 px-4">
+                            <p className="font-semibold text-slate-900">{p.student_name}</p>
+                            <p className="text-slate-500">{p.student_email}</p>
+                          </td>
+                          <td className="py-3 px-4 font-semibold text-slate-800">
+                            {p.subject_name}
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-600">
+                            {p.gateway_payment_id}
+                          </td>
+                          <td className="py-3 px-4 text-right font-mono font-bold">
+                            {formatPaiseToINR(p.amount_paise)}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`font-semibold ${
+                                p.entitlement_status === 'active'
+                                  ? 'text-emerald-700'
+                                  : 'text-red-600'
+                              }`}
+                            >
+                              {p.entitlement_status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 font-mono text-slate-600">
+                            {new Date(p.purchased_at).toLocaleDateString('en-IN')}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Payment Gateway Transactions Ledger */}
+            {payments && (
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-200">
+                  <h2 className="text-sm font-bold text-slate-900 font-display">
+                    Gateway Orders & Payment Transactions Ledger ({payments.transactions.length})
+                  </h2>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-500">
+                        <th className="py-3 px-4 font-semibold">Student</th>
+                        <th className="py-3 px-4 font-semibold">Subject</th>
+                        <th className="py-3 px-4 font-semibold">Gateway Order ID</th>
+                        <th className="py-3 px-4 font-semibold">Gateway Payment ID</th>
+                        <th className="py-3 px-4 font-semibold text-right">Amount</th>
+                        <th className="py-3 px-4 font-semibold">Payment Status</th>
+                        <th className="py-3 px-4 font-semibold">Verification</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {payments.transactions.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="py-8 text-center text-slate-500">
+                            No payment transactions recorded yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        payments.transactions.map((t: any) => (
+                          <tr key={t.id}>
+                            <td className="py-3 px-4">
+                              <p className="font-semibold text-slate-900">{t.student_name}</p>
+                              <p className="text-slate-500">{t.student_email}</p>
+                            </td>
+                            <td className="py-3 px-4 font-medium">{t.subject_name}</td>
+                            <td className="py-3 px-4 font-mono">{t.gateway_order_id}</td>
+                            <td className="py-3 px-4 font-mono">{t.gateway_payment_id}</td>
+                            <td className="py-3 px-4 text-right font-mono font-bold tabular-nums">
+                              {formatPaiseToINR(t.amount_paise)} ({t.amount_paise}p)
+                            </td>
+                            <td className="py-3 px-4 font-mono uppercase">{t.payment_status}</td>
+                            <td className="py-3 px-4">
+                              <span
+                                className={`font-semibold ${
+                                  t.verification_status === 'verified'
+                                    ? 'text-emerald-700'
+                                    : t.verification_status === 'pending'
+                                    ? 'text-amber-700'
+                                    : 'text-red-600'
+                                }`}
+                              >
+                                {t.verification_status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================================================================
+            MODULE 11: REPORTS
         ================================================================== */}
         {activeTab === 'reports' && overview && (
           <div className="space-y-6">
@@ -2075,59 +2404,188 @@ export const AdminDashboardPage: React.FC = () => {
         )}
 
         {/* ==================================================================
-            MODULE 13: SETTINGS, AUDIT LOGS & INVARIANT VERIFICATION
+            MODULE 12: SETTINGS, ADMIN CREDENTIALS & AUDIT LOGS
         ================================================================== */}
         {activeTab === 'settings' && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold text-slate-900 font-display">
-                  Security Invariants & Immutable Audit Logs
-                </h1>
-                <p className="text-xs text-slate-600 mt-1">
-                  Run the automated platform verification suite and inspect administrative and
-                  payment audit logs.
-                </p>
-              </div>
-
-              <button
-                onClick={handleRunInvariantsCheck}
-                className="inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
-              >
-                <ShieldCheck className="w-4 h-4" />
-                <span>Run Platform Invariants Verification</span>
-              </button>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 font-display">
+                Administrator Settings, Credentials & Audit Trail
+              </h1>
+              <p className="text-xs text-slate-600 mt-1">
+                Manage the official Prime Seven administrator profile, rotate your administrator
+                password, verify database synchronization, and inspect platform audit logs.
+              </p>
             </div>
 
-            {invariantReport && (
-              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-3">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Official Admin Profile Card */}
+              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-slate-900 font-display">
-                    Automated Business & Security Invariants Report
-                  </h2>
-                  <span className="text-xs font-mono font-bold text-emerald-700">
-                    {invariantReport.all_passed ? 'ALL CHECKS PASSED' : 'ISSUES DETECTED'}
+                  <div>
+                    <p className="text-[11px] font-mono text-blue-700 font-semibold uppercase">
+                      OFFICIAL PLATFORM ADMINISTRATOR
+                    </p>
+                    <h2 className="text-base font-bold text-slate-900 font-display mt-0.5">
+                      Administrator Profile
+                    </h2>
+                  </div>
+                  <span className="px-2.5 py-1 text-[11px] font-mono font-bold uppercase bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md">
+                    {profile?.role || 'admin'}
                   </span>
                 </div>
-                <div className="divide-y divide-slate-100 text-xs">
-                  {invariantReport.checks.map((c: any) => (
-                    <div key={c.id} className="py-2.5 flex items-start justify-between gap-4">
-                      <div>
-                        <p className="font-semibold text-slate-900">
-                          #{c.id}. {c.rule}
-                        </p>
-                        <p className="text-slate-500 font-mono mt-0.5">{c.details}</p>
-                      </div>
-                      <span
-                        className={`font-mono font-bold shrink-0 ${
-                          c.passed ? 'text-emerald-700' : 'text-red-600'
-                        }`}
-                      >
-                        {c.passed ? 'PASS' : 'FAIL'}
-                      </span>
-                    </div>
-                  ))}
+
+                <form onSubmit={handleSaveAdminProfile} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">
+                      Administrator Display Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      minLength={2}
+                      value={adminDisplayName}
+                      onChange={(e) => setAdminDisplayName(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg font-medium text-slate-900"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">
+                      Official Administrator Email
+                    </label>
+                    <input
+                      type="email"
+                      disabled
+                      value={
+                        settingsData?.official_admin?.email ||
+                        profile?.email ||
+                        'primeseven@gmail.com'
+                      }
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg font-mono text-slate-600"
+                    />
+                  </div>
+
+                  <div className="pt-2 flex items-center justify-between">
+                    <span className="text-slate-500 font-mono">
+                      Password Status:{' '}
+                      <strong className="text-emerald-700">
+                        {settingsData?.official_admin?.password_initialized
+                          ? 'Hashed (scrypt + salt)'
+                          : 'Pending Bootstrap'}
+                      </strong>
+                    </span>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg cursor-pointer"
+                    >
+                      Save Profile
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Change Admin Password Card */}
+              <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+                <div>
+                  <p className="text-[11px] font-mono text-blue-700 font-semibold uppercase">
+                    CREDENTIAL SECURITY
+                  </p>
+                  <h2 className="text-base font-bold text-slate-900 font-display mt-0.5">
+                    Change Administrator Password
+                  </h2>
                 </div>
+
+                <form onSubmit={handleAdminPasswordSubmit} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block font-semibold text-slate-600 mb-1">
+                      Current Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={passwordForm.current_password}
+                      onChange={(e) =>
+                        setPasswordForm({ ...passwordForm, current_password: e.target.value })
+                      }
+                      placeholder="Enter current password"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-600 mb-1">
+                        New Password (min 8 chars)
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={passwordForm.new_password}
+                        onChange={(e) =>
+                          setPasswordForm({ ...passwordForm, new_password: e.target.value })
+                        }
+                        placeholder="Minimum 8 characters"
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-600 mb-1">
+                        Confirm New Password
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={passwordForm.confirm_password}
+                        onChange={(e) =>
+                          setPasswordForm({ ...passwordForm, confirm_password: e.target.value })
+                        }
+                        placeholder="Repeat new password"
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={updatingPassword}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 disabled:opacity-50 rounded-lg cursor-pointer"
+                    >
+                      <KeyRound className="w-3.5 h-3.5" />
+                      <span>{updatingPassword ? 'Updating...' : 'Update Password'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            {/* Platform Configuration Status */}
+            {settingsData && (
+              <div className="bg-white border border-slate-200 rounded-xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1 text-xs">
+                  <h2 className="text-sm font-bold text-slate-900 font-display">
+                    Database & Payment Gateway Configuration
+                  </h2>
+                  <p className="text-slate-600 font-mono">
+                    PostgreSQL Connected:{' '}
+                    <strong>{settingsData.platform_config.postgres_connected ? 'Yes' : 'Local Store'}</strong>{' '}
+                    · Razorpay Mode:{' '}
+                    <strong className="uppercase">{settingsData.platform_config.payment_mode}</strong>{' '}
+                    · Subjects: <strong>{subjects.length}</strong> · Tests:{' '}
+                    <strong>{tests.length}</strong>
+                  </p>
+                </div>
+
+                <button
+                  onClick={handleRunDbMigrations}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <Database className="w-3.5 h-3.5 text-blue-700" />
+                  <span>Sync PostgreSQL Schema</span>
+                </button>
               </div>
             )}
 
@@ -2162,6 +2620,43 @@ export const AdminDashboardPage: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 11: MARKETING & REFERRALS */}
+        {activeTab === 'marketing_referrals' && (
+          <AdminMarketingReferralsModule subjects={subjects} notify={notify} />
+        )}
+
+        {/* Confirmation Dialog Modal */}
+        {confirmDialog && (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 flex items-center justify-center p-4">
+            <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-xl">
+              <h3 className="text-base font-bold text-slate-900 font-display">
+                {confirmDialog.title}
+              </h3>
+              <p className="text-xs text-slate-600 leading-relaxed">{confirmDialog.message}</p>
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setConfirmDialog(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const action = confirmDialog.onConfirm;
+                    setConfirmDialog(null);
+                    await action();
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-red-600 hover:bg-red-700 rounded-lg cursor-pointer"
+                >
+                  {confirmDialog.confirmLabel}
+                </button>
               </div>
             </div>
           </div>

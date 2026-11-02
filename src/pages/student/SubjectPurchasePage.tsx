@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Clock,
   X,
+  Tag,
 } from 'lucide-react';
 
 export const SubjectPurchasePage: React.FC = () => {
@@ -25,6 +26,15 @@ export const SubjectPurchasePage: React.FC = () => {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Promo / Referral Code State (Feature 3)
+  const [promoInput, setPromoInput] = useState('');
+  const [validatingPromo, setValidatingPromo] = useState(false);
+  const [appliedPromo, setAppliedPromo] = useState<any | null>(null);
+  const [promoFeedback, setPromoFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   // Checkout Modal State
   const [checkoutOrder, setCheckoutOrder] = useState<any>(null);
@@ -42,10 +52,84 @@ export const SubjectPurchasePage: React.FC = () => {
       .then((res) => {
         setData(res);
         setError(null);
+
+        // If backend returned an automatic first-purchase referral discount offer for this student
+        if (res.auto_referral_offer && res.auto_referral_offer.valid) {
+          setAppliedPromo(res.auto_referral_offer);
+          setPromoInput(res.auto_referral_offer.code || '');
+          setPromoFeedback({
+            type: 'success',
+            message: res.auto_referral_offer.message || 'Promo code applied successfully.',
+          });
+        } else {
+          const savedCode = sessionStorage.getItem('primeprep_ref_code');
+          if (savedCode) {
+            setPromoInput(savedCode);
+          }
+        }
       })
       .catch((err) => setError(err.message || 'Failed to load package details'))
       .finally(() => setLoading(false));
   }, [slug, profile]);
+
+  const handleApplyPromoCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!profile) {
+      const currentPath = `/subjects/${slug}/purchase${
+        returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ''
+      }`;
+      navigate(`/login?redirect=${encodeURIComponent(currentPath)}`);
+      return;
+    }
+
+    if (!data?.package?.id) return;
+    const trimmed = promoInput.trim().toUpperCase();
+    if (!trimmed) {
+      setPromoFeedback({ type: 'error', message: 'Invalid promo code.' });
+      return;
+    }
+
+    setValidatingPromo(true);
+    setPromoFeedback(null);
+
+    try {
+      const res = await apiRequest('/api/v1/promo/validate', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: trimmed,
+          package_id: data.package.id,
+          currently_applied_code: appliedPromo?.code || null,
+        }),
+      });
+
+      if (res.valid) {
+        setAppliedPromo(res);
+        setPromoInput(res.code || trimmed);
+        setPromoFeedback({
+          type: 'success',
+          message: res.message || 'Promo code applied successfully.',
+        });
+      } else {
+        setPromoFeedback({
+          type: 'error',
+          message: res.message || 'Invalid promo code.',
+        });
+      }
+    } catch (err: any) {
+      setPromoFeedback({
+        type: 'error',
+        message: err.message || 'Invalid promo code.',
+      });
+    } finally {
+      setValidatingPromo(false);
+    }
+  };
+
+  const handleRemovePromoCode = () => {
+    setAppliedPromo(null);
+    setPromoInput('');
+    setPromoFeedback(null);
+  };
 
   const handleInitiateOrder = async () => {
     if (!profile) {
@@ -63,7 +147,10 @@ export const SubjectPurchasePage: React.FC = () => {
     try {
       const orderRes = await apiRequest('/api/v1/payments/create-order', {
         method: 'POST',
-        body: JSON.stringify({ package_id: data.package.id }),
+        body: JSON.stringify({
+          package_id: data.package.id,
+          promo_code: appliedPromo?.code || null,
+        }),
       });
       setCheckoutOrder(orderRes);
     } catch (err: any) {
@@ -123,6 +210,7 @@ export const SubjectPurchasePage: React.FC = () => {
 
       if (verifyRes.verified) {
         setCheckoutOrder(null);
+        sessionStorage.removeItem('primeprep_ref_code');
         await refreshProfile();
         // Reload package status
         const updatedPkg = await apiRequest(`/api/v1/packages/${slug}`);
@@ -197,6 +285,11 @@ export const SubjectPurchasePage: React.FC = () => {
   }
 
   const { subject, package: pkg, is_purchased, total_tests, category_counts } = data;
+  const originalAmountPaise = pkg.price_paise;
+  const discountAmountPaise = appliedPromo?.valid ? appliedPromo.discount_amount_paise : 0;
+  const finalPayablePaise = appliedPromo?.valid
+    ? appliedPromo.final_amount_paise
+    : originalAmountPaise;
 
   return (
     <div className="max-w-5xl mx-auto px-6 py-10">
@@ -337,7 +430,7 @@ export const SubjectPurchasePage: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Checkout Summary Card */}
+        {/* Right Checkout Summary Card (with Feature 3 Promo Code & Price Breakdown) */}
         <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 sm:p-8">
           <div className="flex items-center justify-between pb-4 border-b border-slate-200">
             <span className="text-xs font-semibold text-slate-500 uppercase">Package Status</span>
@@ -355,18 +448,122 @@ export const SubjectPurchasePage: React.FC = () => {
             <p className="text-xs text-slate-500">Complete Subject Package Price</p>
             <div className="mt-1 flex items-baseline gap-2">
               <span className="text-4xl font-extrabold text-slate-900 font-mono tabular-nums">
-                {formatPaiseToINR(pkg.price_paise)}
+                {formatPaiseToINR(finalPayablePaise)}
               </span>
-              <span className="text-xs text-slate-500 font-mono">
-                ({pkg.price_paise} paise · INR)
-              </span>
+              {discountAmountPaise > 0 && (
+                <span className="text-sm text-slate-400 line-through font-mono tabular-nums">
+                  {formatPaiseToINR(originalAmountPaise)}
+                </span>
+              )}
             </div>
-            <p className="mt-2 text-xs text-slate-600">
+            <p className="mt-1.5 text-xs text-slate-600">
               One-time payment for the complete {subject.name} series ({total_tests} tests).
             </p>
           </div>
 
-          {/* Part 7.3: Already Purchased State */}
+          {!is_purchased && (
+            <>
+              {/* Promo Code Input Section */}
+              <div className="mt-6 pt-5 border-t border-slate-200">
+                <label
+                  htmlFor="promo-code-input"
+                  className="flex items-center gap-1.5 text-xs font-semibold text-slate-800"
+                >
+                  <Tag className="w-3.5 h-3.5 text-blue-700" />
+                  <span>Have a promo code?</span>
+                </label>
+
+                <form onSubmit={handleApplyPromoCode} className="mt-2 flex items-center gap-2">
+                  <input
+                    id="promo-code-input"
+                    type="text"
+                    value={promoInput}
+                    onChange={(e) => setPromoInput(e.target.value.toUpperCase())}
+                    placeholder="e.g. ADITYA10 or Referral Code"
+                    className="flex-1 px-3 py-2 text-xs font-mono uppercase bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-blue-700"
+                  />
+                  <button
+                    type="submit"
+                    disabled={validatingPromo}
+                    className="px-3.5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-50 rounded-lg whitespace-nowrap cursor-pointer"
+                  >
+                    {validatingPromo ? 'Checking...' : 'Apply Code'}
+                  </button>
+                </form>
+
+                {appliedPromo?.valid && (
+                  <div className="mt-2.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between gap-2 text-xs text-emerald-900">
+                    <div className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>
+                        Code <strong className="font-mono">{appliedPromo.code}</strong> applied (
+                        {appliedPromo.discount_percent}% OFF)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRemovePromoCode}
+                      className="text-[11px] font-semibold text-red-700 hover:underline cursor-pointer"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                )}
+
+                {promoFeedback && (
+                  <p
+                    className={`mt-2 text-xs font-medium ${
+                      promoFeedback.type === 'success' ? 'text-emerald-700' : 'text-red-600'
+                    }`}
+                  >
+                    {promoFeedback.message}
+                  </p>
+                )}
+              </div>
+
+              {/* Checkout Price Breakdown */}
+              <div className="mt-5 p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>Original package price</span>
+                  <span className="font-mono font-medium text-slate-900 tabular-nums">
+                    {formatPaiseToINR(originalAmountPaise)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>
+                    Promo discount
+                    {appliedPromo?.valid ? ` (${appliedPromo.discount_percent}% OFF)` : ''}
+                  </span>
+                  <span
+                    className={`font-mono font-semibold tabular-nums ${
+                      discountAmountPaise > 0 ? 'text-emerald-700' : 'text-slate-500'
+                    }`}
+                  >
+                    {discountAmountPaise > 0
+                      ? `-${formatPaiseToINR(discountAmountPaise)}`
+                      : formatPaiseToINR(0)}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-slate-600">
+                  <span>Additional applicable charges</span>
+                  <span className="font-mono text-slate-500 tabular-nums">
+                    {formatPaiseToINR(0)}
+                  </span>
+                </div>
+
+                <div className="pt-2.5 border-t border-slate-200 flex items-center justify-between font-bold text-slate-900 text-sm">
+                  <span>Final payable amount</span>
+                  <span className="font-mono tabular-nums">
+                    {formatPaiseToINR(finalPayablePaise)}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Already Purchased State vs Checkout Button */}
           {is_purchased ? (
             <div className="mt-6 space-y-3">
               <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-900">
@@ -391,7 +588,7 @@ export const SubjectPurchasePage: React.FC = () => {
                 <span>
                   {processingOrder
                     ? 'Creating Razorpay Order...'
-                    : `Purchase ${subject.name} Test Series`}
+                    : `Pay ${formatPaiseToINR(finalPayablePaise)} & Unlock Series`}
                 </span>
               </button>
 
@@ -426,7 +623,7 @@ export const SubjectPurchasePage: React.FC = () => {
             <div className="p-6">
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Gateway Order ID</span>
+                  <span className="text-slate-500">Order Reference</span>
                   <span className="font-mono font-semibold text-slate-900">
                     {checkoutOrder.razorpay_config.gateway_order_id}
                   </span>
@@ -437,53 +634,65 @@ export const SubjectPurchasePage: React.FC = () => {
                     {checkoutOrder.razorpay_config.student_email}
                   </span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Package</span>
+                  <span className="font-medium text-slate-900">
+                    {checkoutOrder.razorpay_config.package_name}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Original Price</span>
+                  <span className="font-mono text-slate-700 tabular-nums">
+                    {formatPaiseToINR(
+                      checkoutOrder.razorpay_config.original_amount_paise ??
+                        checkoutOrder.razorpay_config.amount_paise
+                    )}
+                  </span>
+                </div>
+                {(checkoutOrder.razorpay_config.discount_amount_paise ?? 0) > 0 && (
+                  <div className="flex justify-between text-emerald-700">
+                    <span>
+                      Discount Applied ({checkoutOrder.razorpay_config.promo_code})
+                    </span>
+                    <span className="font-mono font-semibold tabular-nums">
+                      -{formatPaiseToINR(checkoutOrder.razorpay_config.discount_amount_paise)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between pt-2 border-t border-slate-200">
-                  <span className="text-slate-700 font-semibold">Payable Amount</span>
+                  <span className="text-slate-700 font-semibold">Total Payable</span>
                   <span className="font-mono text-base font-bold text-slate-900 tabular-nums">
                     {formatPaiseToINR(checkoutOrder.razorpay_config.amount_paise)}
                   </span>
                 </div>
               </div>
 
-              <p className="mt-4 text-xs text-slate-600 leading-relaxed">
-                Select a Razorpay Test Mode outcome below. The backend will verify the HMAC-SHA256
-                signature and grant access strictly for verified captured payments.
-              </p>
+              <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-slate-700 leading-relaxed">
+                Complete your test-mode checkout below. Your payment signature and amount are
+                cryptographically verified on the server before unlocking the{' '}
+                <strong>{checkoutOrder.razorpay_config.subject_name}</strong> test series.
+              </div>
 
               <div className="mt-5 space-y-2.5">
                 <button
                   onClick={() => handleCompleteTestCheckout('success')}
                   disabled={processingOrder}
-                  className="w-full py-3 px-4 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-between cursor-pointer"
+                  className="w-full py-3 px-4 bg-blue-700 hover:bg-blue-800 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition-colors flex items-center justify-between cursor-pointer"
                 >
-                  <span>Complete Verified Payment (Success)</span>
+                  <span>
+                    {processingOrder ? 'Verifying Payment...' : 'Authorize & Complete Payment'}
+                  </span>
                   <span className="font-mono">
                     {formatPaiseToINR(checkoutOrder.razorpay_config.amount_paise)}
                   </span>
                 </button>
 
                 <button
-                  onClick={() => handleCompleteTestCheckout('pending')}
+                  onClick={() => setCheckoutOrder(null)}
                   disabled={processingOrder}
-                  className="w-full py-2.5 px-4 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 text-xs font-semibold rounded-lg transition-colors text-left cursor-pointer"
+                  className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-colors text-center cursor-pointer"
                 >
-                  Simulate Pending Bank Confirmation (No Premature Access)
-                </button>
-
-                <button
-                  onClick={() => handleCompleteTestCheckout('failed')}
-                  disabled={processingOrder}
-                  className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-semibold rounded-lg transition-colors text-left cursor-pointer"
-                >
-                  Simulate Gateway Payment Failure (Subject Remains Locked)
-                </button>
-
-                <button
-                  onClick={() => handleCompleteTestCheckout('tampered_signature')}
-                  disabled={processingOrder}
-                  className="w-full py-2.5 px-4 bg-red-50 hover:bg-red-100 text-red-900 border border-red-200 text-xs font-semibold rounded-lg transition-colors text-left cursor-pointer"
-                >
-                  Simulate Forged / Invalid Signature (Rejected by Server)
+                  Cancel Checkout
                 </button>
               </div>
             </div>

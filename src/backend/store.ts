@@ -19,8 +19,15 @@ import {
   CategorySlug,
   OptionKey,
   StudyBookmark,
+  SalesAgent,
+  PromoCodeRecord,
+  ReferralProgramSettings,
+  ReferralAttribution,
+  WalletTransaction,
+  PromoCodeType,
 } from '../types/domain.ts';
 import { syncDatabaseToPostgres } from './database/pg-pool.ts';
+import { getOfficialAdminConfig, hashPassword } from './firebase-admin.ts';
 
 export interface DatabaseSchema {
   users: UserProfile[];
@@ -33,11 +40,31 @@ export interface DatabaseSchema {
   payment_orders: PaymentOrder[];
   payment_transactions: PaymentTransaction[];
   purchases: PurchaseEntitlement[];
+  sales_agents: SalesAgent[];
+  promo_codes: PromoCodeRecord[];
+  referral_settings: ReferralProgramSettings;
+  referral_attributions: ReferralAttribution[];
+  wallet_transactions: WalletTransaction[];
   attempts: TestAttempt[];
   attempt_answers: AttemptAnswer[];
   audit_logs: AuditLog[];
   webhook_events: WebhookEvent[];
   bookmarks: StudyBookmark[];
+}
+
+export interface DiscountValidationResult {
+  valid: boolean;
+  message: string;
+  code: string | null;
+  discount_type: PromoCodeType | null;
+  discount_percent: number;
+  original_amount_paise: number;
+  discount_amount_paise: number;
+  final_amount_paise: number;
+  agent_id: string | null;
+  agent_name: string | null;
+  referrer_user_id: string | null;
+  referrer_name: string | null;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -907,13 +934,16 @@ function createSeedDatabase(): DatabaseSchema {
     }
   });
 
+  const adminCfg = getOfficialAdminConfig();
   const users: UserProfile[] = [
     {
-      id: 'admin-bootstrap-uid',
-      full_name: 'Rishabh Kesharwani (Platform Admin)',
-      email: 'rishabhkesharwani8218@gmail.com',
+      id: 'admin-primeseven-uid',
+      full_name: adminCfg.adminName,
+      email: adminCfg.adminEmail,
       role: 'admin',
       account_status: 'active',
+      password_hash: adminCfg.initialPassword ? hashPassword(adminCfg.initialPassword) : undefined,
+      must_change_password: Boolean(adminCfg.initialPassword),
       created_at: now,
       updated_at: now,
     },
@@ -935,6 +965,19 @@ function createSeedDatabase(): DatabaseSchema {
     payment_orders: [],
     payment_transactions: [],
     purchases: [],
+    sales_agents: [],
+    promo_codes: [],
+    referral_settings: {
+      is_enabled: true,
+      friend_discount_percent: 10,
+      referrer_reward_percent: 10,
+      min_purchase_paise: 10000, // ₹100
+      reward_expiry_days: null,
+      updated_at: now,
+      updated_by: 'system-seed',
+    },
+    referral_attributions: [],
+    wallet_transactions: [],
     attempts: [],
     attempt_answers: [],
     audit_logs: [
@@ -968,14 +1011,20 @@ class RelationalDataStore {
         if (!Array.isArray(this.data.bookmarks)) {
           this.data.bookmarks = [];
         }
+        this.ensureMarketingCollections();
         this.enforceGlobalFreeTestInvariants();
+        this.ensureOfficialAdminAccount();
       } catch (err) {
         console.error('Error loading persisted database, re-seeding:', err);
         this.data = createSeedDatabase();
+        this.ensureMarketingCollections();
+        this.ensureOfficialAdminAccount();
         this.persist();
       }
     } else {
       this.data = createSeedDatabase();
+      this.ensureMarketingCollections();
+      this.ensureOfficialAdminAccount();
       this.persist();
     }
   }
@@ -1025,42 +1074,211 @@ class RelationalDataStore {
     }
   }
 
+  /**
+   * Idempotently provisions or updates the official Prime Seven administrator account
+   * (Display Name: Prime Seven, Email: primeseven@gmail.com by default or via env vars).
+   * Never overwrites an existing admin password hash on normal restart.
+   */
+  public ensureOfficialAdminAccount(): UserProfile {
+    const now = new Date().toISOString();
+    const { adminName, adminEmail, initialPassword } = getOfficialAdminConfig();
+    let changed = false;
+
+    let adminUser = this.data.users.find(
+      (u) => u.email.toLowerCase() === adminEmail || u.id === 'admin-primeseven-uid'
+    );
+
+    if (!adminUser) {
+      adminUser = {
+        id: 'admin-primeseven-uid',
+        full_name: adminName,
+        email: adminEmail,
+        role: 'admin',
+        account_status: 'active',
+        password_hash: initialPassword ? hashPassword(initialPassword) : undefined,
+        must_change_password: Boolean(initialPassword),
+        created_at: now,
+        updated_at: now,
+      };
+      this.data.users.unshift(adminUser);
+      changed = true;
+    } else {
+      if (adminUser.role !== 'admin') {
+        adminUser.role = 'admin';
+        changed = true;
+      }
+      if (adminUser.account_status !== 'active') {
+        adminUser.account_status = 'active';
+        changed = true;
+      }
+      if (!adminUser.full_name || adminUser.full_name === adminEmail.split('@')[0]) {
+        adminUser.full_name = adminName;
+        changed = true;
+      }
+      // Only provision initial password if no password_hash exists yet (idempotent)
+      if (!adminUser.password_hash && initialPassword) {
+        adminUser.password_hash = hashPassword(initialPassword);
+        adminUser.must_change_password = true;
+        adminUser.updated_at = now;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persist();
+    }
+    return adminUser;
+  }
+
+  /**
+   * Ensures all marketing, referral, promo code, and wallet collections exist on loaded databases
+   * without overwriting or deleting existing records.
+   */
+  public ensureMarketingCollections(): void {
+    const now = new Date().toISOString();
+    if (!Array.isArray(this.data.sales_agents)) {
+      this.data.sales_agents = [];
+    }
+    if (!Array.isArray(this.data.promo_codes)) {
+      this.data.promo_codes = [];
+    }
+    if (!this.data.referral_settings) {
+      this.data.referral_settings = {
+        is_enabled: true,
+        friend_discount_percent: 10,
+        referrer_reward_percent: 10,
+        min_purchase_paise: 10000,
+        reward_expiry_days: null,
+        updated_at: now,
+        updated_by: 'system',
+      };
+    }
+    if (!Array.isArray(this.data.referral_attributions)) {
+      this.data.referral_attributions = [];
+    }
+    if (!Array.isArray(this.data.wallet_transactions)) {
+      this.data.wallet_transactions = [];
+    }
+    // Ensure every registered student has a unique referral code
+    for (const u of this.data.users) {
+      if (u.role === 'student' && !u.referral_code) {
+        this.ensureUserReferralCode(u, false);
+      }
+    }
+  }
+
+  /**
+   * Generates and assigns a unique uppercase referral code for a student (e.g. RISHABH10, ADITYA24).
+   */
+  public ensureUserReferralCode(user: UserProfile, shouldPersist = true): string {
+    if (user.referral_code) {
+      return user.referral_code;
+    }
+
+    const usedCodes = new Set<string>();
+    for (const u of this.data.users) {
+      if (u.referral_code) usedCodes.add(u.referral_code.toUpperCase());
+    }
+    for (const a of this.data.sales_agents || []) {
+      if (a.promo_code) usedCodes.add(a.promo_code.toUpperCase());
+    }
+    for (const p of this.data.promo_codes || []) {
+      if (p.code) usedCodes.add(p.code.toUpperCase());
+    }
+
+    const cleanAlpha = (user.full_name || user.email.split('@')[0] || 'STUDENT')
+      .replace(/[^a-zA-Z]/g, '')
+      .toUpperCase();
+    const prefix = (cleanAlpha.slice(0, 7) || 'PRIME').padEnd(4, 'X');
+
+    let candidate = `${prefix}10`;
+    let suffix = 11;
+    while (usedCodes.has(candidate)) {
+      candidate = `${prefix}${suffix}`;
+      suffix++;
+    }
+
+    user.referral_code = candidate;
+    if (shouldPersist) {
+      this.persist();
+    }
+    return candidate;
+  }
+
+  public getUserWalletBalancePaise(userId: string): number {
+    const txns = (this.data.wallet_transactions || []).filter((t) => t.user_id === userId);
+    const total = txns.reduce((sum, t) => sum + t.amount_paise, 0);
+    return Math.max(0, total);
+  }
+
+  public sanitizeUser(
+    user: UserProfile
+  ): Omit<UserProfile, 'password_hash'> & {
+    has_password: boolean;
+    wallet_balance_paise: number;
+  } {
+    if (user.role === 'student' && !user.referral_code) {
+      this.ensureUserReferralCode(user, false);
+    }
+    const { password_hash, ...rest } = user;
+    return {
+      ...rest,
+      has_password: Boolean(password_hash),
+      wallet_balance_paise: this.getUserWalletBalancePaise(user.id),
+    };
+  }
+
   public upsertUser(uid: string, email: string, displayName?: string): UserProfile {
     const now = new Date().toISOString();
     const normalizedEmail = email.toLowerCase().trim();
-    const isBootstrapAdmin = normalizedEmail === 'rishabhkesharwani8218@gmail.com';
+    const { adminEmail, adminName } = getOfficialAdminConfig();
+    const isOfficialAdmin =
+      normalizedEmail === adminEmail || normalizedEmail === 'primeseven@gmail.com';
 
     let user = this.data.users.find((u) => u.id === uid);
     if (!user) {
-      // Check if bootstrap admin placeholder exists by email
       const existingByEmail = this.data.users.find(
-        (u) => u.email.toLowerCase() === normalizedEmail && u.id === 'admin-bootstrap-uid'
+        (u) => u.email.toLowerCase() === normalizedEmail
       );
       if (existingByEmail) {
-        existingByEmail.id = uid;
-        existingByEmail.full_name = displayName || existingByEmail.full_name;
-        existingByEmail.updated_at = now;
-        this.persist();
+        if (displayName && existingByEmail.full_name === existingByEmail.email.split('@')[0]) {
+          existingByEmail.full_name = displayName;
+          existingByEmail.updated_at = now;
+          this.persist();
+        }
+        if (existingByEmail.role === 'student' && !existingByEmail.referral_code) {
+          this.ensureUserReferralCode(existingByEmail, true);
+        }
         return existingByEmail;
       }
 
       user = {
         id: uid,
-        full_name: displayName || email.split('@')[0] || 'Student',
+        full_name: isOfficialAdmin
+          ? displayName || adminName
+          : displayName || email.split('@')[0] || 'Student',
         email: normalizedEmail,
-        role: isBootstrapAdmin ? 'admin' : 'student',
+        role: isOfficialAdmin ? 'admin' : 'student',
         account_status: 'active',
+        referred_by_user_id: null,
+        referred_by_code: null,
         created_at: now,
         updated_at: now,
       };
       this.data.users.push(user);
+      if (user.role === 'student') {
+        this.ensureUserReferralCode(user, false);
+      }
       this.persist();
     } else {
       if (displayName && user.full_name === user.email.split('@')[0]) {
         user.full_name = displayName;
         user.updated_at = now;
-        this.persist();
       }
+      if (user.role === 'student' && !user.referral_code) {
+        this.ensureUserReferralCode(user, false);
+      }
+      this.persist();
     }
     return user;
   }
@@ -1079,6 +1297,411 @@ class RelationalDataStore {
     if (test.access_type === 'free') return true;
     if (!userId) return false;
     return this.hasSubjectEntitlement(userId, test.subject_id);
+  }
+
+  /**
+   * Validates a Promo Code (Sales Agent or Campaign) or Student Referral Code
+   * and returns the authoritative integer-paise discount calculation.
+   */
+  public validateDiscountCode(
+    userId: string | null,
+    subjectId: string,
+    rawCode?: string | null
+  ): DiscountValidationResult {
+    const pkg = this.data.packages.find((p) => p.subject_id === subjectId);
+    const basePricePaise = pkg?.price_paise || 0;
+
+    const fail = (message: string): DiscountValidationResult => ({
+      valid: false,
+      message,
+      code: rawCode ? rawCode.trim().toUpperCase() : null,
+      discount_type: null,
+      discount_percent: 0,
+      original_amount_paise: basePricePaise,
+      discount_amount_paise: 0,
+      final_amount_paise: basePricePaise,
+      agent_id: null,
+      agent_name: null,
+      referrer_user_id: null,
+      referrer_name: null,
+    });
+
+    if (!pkg || !pkg.is_available_for_sale) {
+      return fail('Promo code is not eligible for this purchase.');
+    }
+
+    const normalizedCode = (rawCode || '').trim().toUpperCase();
+    if (!normalizedCode) {
+      return fail('Invalid promo code.');
+    }
+
+    const user = userId ? this.data.users.find((u) => u.id === userId) : null;
+    const nowMs = Date.now();
+
+    // 1. Check if code matches a student's own referral code (Self-Referral Ban)
+    if (user && user.referral_code && user.referral_code.toUpperCase() === normalizedCode) {
+      return fail('You cannot use your own referral code.');
+    }
+
+    // 2. Check Sales Agents table first (or linked promo_codes)
+    const agent = (this.data.sales_agents || []).find(
+      (a) => a.promo_code.toUpperCase() === normalizedCode
+    );
+    const promoRecord = (this.data.promo_codes || []).find(
+      (p) => p.code.toUpperCase() === normalizedCode
+    );
+
+    if (agent || promoRecord) {
+      // If linked to an agent, check agent status
+      const linkedAgent =
+        agent ||
+        (promoRecord?.agent_id
+          ? this.data.sales_agents.find((a) => a.id === promoRecord.agent_id)
+          : undefined);
+
+      if (linkedAgent && linkedAgent.status !== 'active') {
+        return fail('Promo code inactive.');
+      }
+
+      if (promoRecord) {
+        if (!promoRecord.is_active) {
+          return fail('Promo code inactive.');
+        }
+        if (promoRecord.starts_at && new Date(promoRecord.starts_at).getTime() > nowMs) {
+          return fail('Promo code inactive.');
+        }
+        if (promoRecord.expires_at && new Date(promoRecord.expires_at).getTime() < nowMs) {
+          return fail('Promo code expired.');
+        }
+        if (
+          promoRecord.max_uses !== null &&
+          promoRecord.max_uses !== undefined &&
+          promoRecord.current_uses >= promoRecord.max_uses
+        ) {
+          return fail('This code has already been used.');
+        }
+        if (
+          Array.isArray(promoRecord.applicable_subject_ids) &&
+          promoRecord.applicable_subject_ids.length > 0 &&
+          !promoRecord.applicable_subject_ids.includes(subjectId)
+        ) {
+          return fail('Promo code is not eligible for this purchase.');
+        }
+        if (promoRecord.min_purchase_paise > 0 && basePricePaise < promoRecord.min_purchase_paise) {
+          return fail('Promo code is not eligible for this purchase.');
+        }
+      }
+
+      // Check if this specific student already used this exact promo code on a completed purchase for this subject
+      if (user) {
+        const alreadyUsedByUser = this.data.purchases.some(
+          (pur) =>
+            pur.user_id === user.id &&
+            pur.subject_id === subjectId &&
+            pur.entitlement_status === 'active'
+        );
+        if (alreadyUsedByUser) {
+          return fail('This code has already been used.');
+        }
+      }
+
+      const discountPercent = promoRecord
+        ? promoRecord.discount_percent
+        : linkedAgent
+        ? linkedAgent.discount_percent
+        : 10;
+
+      const discountAmountPaise = Math.round((basePricePaise * discountPercent) / 100);
+      const finalAmountPaise = Math.max(100, basePricePaise - discountAmountPaise);
+
+      return {
+        valid: true,
+        message: 'Promo code applied successfully.',
+        code: normalizedCode,
+        discount_type: linkedAgent ? 'agent' : promoRecord?.code_type || 'campaign',
+        discount_percent: discountPercent,
+        original_amount_paise: basePricePaise,
+        discount_amount_paise: basePricePaise - finalAmountPaise,
+        final_amount_paise: finalAmountPaise,
+        agent_id: linkedAgent ? linkedAgent.id : null,
+        agent_name: linkedAgent ? linkedAgent.name : null,
+        referrer_user_id: null,
+        referrer_name: null,
+      };
+    }
+
+    // 3. Check Student Referral Codes
+    const referrer = this.data.users.find(
+      (u) =>
+        u.role === 'student' &&
+        u.referral_code &&
+        u.referral_code.toUpperCase() === normalizedCode
+    );
+
+    if (referrer) {
+      const refSettings = this.data.referral_settings;
+      if (!refSettings || !refSettings.is_enabled) {
+        return fail('Promo code inactive.');
+      }
+      if (referrer.account_status !== 'active') {
+        return fail('Promo code inactive.');
+      }
+      if (user && referrer.id === user.id) {
+        return fail('You cannot use your own referral code.');
+      }
+      if (basePricePaise < (refSettings.min_purchase_paise || 0)) {
+        return fail('Promo code is not eligible for this purchase.');
+      }
+
+      if (user) {
+        // Referral code is strictly for a referred student's FIRST eligible purchase
+        const existingCompletedPurchases = this.data.purchases.filter(
+          (p) => p.user_id === user.id && p.entitlement_status === 'active'
+        );
+        if (existingCompletedPurchases.length > 0) {
+          return fail('Promo code is not eligible for this purchase.');
+        }
+
+        // If user already registered with a DIFFERENT referrer, prevent switching referrers
+        if (user.referred_by_user_id && user.referred_by_user_id !== referrer.id) {
+          return fail('Another discount is already applied.');
+        }
+
+        // Check if referral attribution for this user was already rewarded
+        const existingAttr = (this.data.referral_attributions || []).find(
+          (ra) => ra.referred_user_id === user.id
+        );
+        if (existingAttr && existingAttr.status === 'rewarded') {
+          return fail('This code has already been used.');
+        }
+      }
+
+      const discountPercent = refSettings.friend_discount_percent || 10;
+      const discountAmountPaise = Math.round((basePricePaise * discountPercent) / 100);
+      const finalAmountPaise = Math.max(100, basePricePaise - discountAmountPaise);
+
+      return {
+        valid: true,
+        message: 'Promo code applied successfully.',
+        code: normalizedCode,
+        discount_type: 'referral',
+        discount_percent: discountPercent,
+        original_amount_paise: basePricePaise,
+        discount_amount_paise: basePricePaise - finalAmountPaise,
+        final_amount_paise: finalAmountPaise,
+        agent_id: null,
+        agent_name: null,
+        referrer_user_id: referrer.id,
+        referrer_name: referrer.full_name,
+      };
+    }
+
+    return fail('Invalid promo code.');
+  }
+
+  /**
+   * Idempotently processes Sales Agent attribution and Student Referral rewards
+   * strictly AFTER a payment transaction is verified and captured.
+   */
+  public processVerifiedPurchaseAttributionAndRewards(
+    order: PaymentOrder,
+    transaction: PaymentTransaction,
+    entitlement: PurchaseEntitlement
+  ): void {
+    if (
+      transaction.payment_status !== 'captured' ||
+      transaction.verification_status !== 'verified'
+    ) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const originalPaise = order.original_amount_paise ?? order.expected_amount_paise;
+    const discountPaise = order.discount_amount_paise ?? 0;
+    const finalPaise = order.final_amount_paise ?? order.expected_amount_paise;
+
+    entitlement.original_amount_paise = originalPaise;
+    entitlement.discount_amount_paise = discountPaise;
+    entitlement.final_amount_paise = finalPaise;
+    entitlement.promo_code = order.promo_code || null;
+    entitlement.promo_type = order.promo_type || null;
+    entitlement.agent_id = order.agent_id || null;
+    entitlement.referrer_user_id = order.referrer_user_id || null;
+
+    // 1. Increment promo_codes.current_uses if a promo code was used (only once per order)
+    if (order.promo_code && (order.promo_type === 'agent' || order.promo_type === 'campaign')) {
+      const promoRec = this.data.promo_codes.find(
+        (p) => p.code.toUpperCase() === order.promo_code!.toUpperCase()
+      );
+      if (promoRec && order.reward_status !== 'granted') {
+        promoRec.current_uses = (promoRec.current_uses || 0) + 1;
+        promoRec.updated_at = now;
+      }
+      order.reward_status = 'granted';
+      entitlement.reward_status = 'granted';
+    }
+
+    // 2. Process Student Referral Reward if this order is a qualified referral purchase
+    if (order.promo_type === 'referral' && order.referrer_user_id) {
+      const referrer = this.data.users.find((u) => u.id === order.referrer_user_id);
+      const buyer = this.data.users.find((u) => u.id === order.user_id);
+      const refSettings = this.data.referral_settings;
+
+      if (referrer && buyer && referrer.id !== buyer.id) {
+        // Idempotency check: has a referral reward credit already been issued for this purchase or referred student?
+        const existingCredit = this.data.wallet_transactions.find(
+          (wt) =>
+            wt.transaction_type === 'referral_reward_credit' &&
+            (wt.reference_id === entitlement.id || wt.reference_id === order.id)
+        );
+
+        let attribution = this.data.referral_attributions.find(
+          (ra) => ra.referred_user_id === buyer.id
+        );
+
+        if (!attribution) {
+          attribution = {
+            id: `refattr-${crypto.randomUUID()}`,
+            referrer_user_id: referrer.id,
+            referred_user_id: buyer.id,
+            referral_code: order.promo_code || referrer.referral_code || '',
+            status: 'registered',
+            order_id: order.id,
+            purchase_id: entitlement.id,
+            subject_id: order.subject_id,
+            original_amount_paise: originalPaise,
+            friend_discount_paise: discountPaise,
+            referrer_reward_paise: 0,
+            rewarded_at: null,
+            reversed_at: null,
+            created_at: now,
+            updated_at: now,
+          };
+          this.data.referral_attributions.unshift(attribution);
+        }
+
+        if (!existingCredit && attribution.status !== 'rewarded') {
+          const rewardPercent = refSettings?.referrer_reward_percent || 10;
+          // Referrer receives 10% of the eligible package base price (original_amount_paise)
+          const rewardPaise = Math.round((originalPaise * rewardPercent) / 100);
+          const currentBalance = this.getUserWalletBalancePaise(referrer.id);
+          const newBalance = currentBalance + rewardPaise;
+
+          const subj = this.data.subjects.find((s) => s.id === order.subject_id);
+          const walletTxn: WalletTransaction = {
+            id: `wtxn-${crypto.randomUUID()}`,
+            user_id: referrer.id,
+            transaction_type: 'referral_reward_credit',
+            amount_paise: rewardPaise,
+            balance_after_paise: newBalance,
+            reference_type: 'purchase',
+            reference_id: entitlement.id,
+            description: `Referral reward (${rewardPercent}% of base price) for ${buyer.full_name}'s verified purchase of ${subj?.name || 'Subject Series'}`,
+            created_at: now,
+          };
+          this.data.wallet_transactions.unshift(walletTxn);
+
+          attribution.status = 'rewarded';
+          attribution.order_id = order.id;
+          attribution.purchase_id = entitlement.id;
+          attribution.subject_id = order.subject_id;
+          attribution.original_amount_paise = originalPaise;
+          attribution.friend_discount_paise = discountPaise;
+          attribution.referrer_reward_paise = rewardPaise;
+          attribution.rewarded_at = now;
+          attribution.updated_at = now;
+
+          order.reward_status = 'granted';
+          entitlement.reward_status = 'granted';
+        }
+      }
+    }
+
+    this.persist();
+  }
+
+  /**
+   * Safely reverses referral rewards and promo usage when a purchase is refunded or revoked.
+   */
+  public reversePurchaseRewardsOnRevokeOrRefund(
+    entitlement: PurchaseEntitlement,
+    actorId: string,
+    actorEmail: string,
+    reason: string
+  ): void {
+    const now = new Date().toISOString();
+
+    // 1. If promo code usage was counted, decrement current_uses safely
+    if (
+      entitlement.promo_code &&
+      (entitlement.promo_type === 'agent' || entitlement.promo_type === 'campaign') &&
+      entitlement.reward_status === 'granted'
+    ) {
+      const promoRec = this.data.promo_codes.find(
+        (p) => p.code.toUpperCase() === entitlement.promo_code!.toUpperCase()
+      );
+      if (promoRec && promoRec.current_uses > 0) {
+        promoRec.current_uses -= 1;
+        promoRec.updated_at = now;
+      }
+      entitlement.reward_status = 'reversed';
+    }
+
+    // 2. If referral reward was granted, create a reversal debit in wallet_transactions
+    const attribution = this.data.referral_attributions.find(
+      (ra) =>
+        ra.purchase_id === entitlement.id ||
+        (ra.referred_user_id === entitlement.user_id && ra.status === 'rewarded')
+    );
+
+    if (attribution && attribution.status === 'rewarded') {
+      const alreadyReversed = this.data.wallet_transactions.find(
+        (wt) =>
+          wt.transaction_type === 'referral_reward_reversal' &&
+          wt.reference_id === entitlement.id
+      );
+
+      if (!alreadyReversed && attribution.referrer_reward_paise > 0) {
+        const currentBalance = this.getUserWalletBalancePaise(attribution.referrer_user_id);
+        const newBalance = Math.max(0, currentBalance - attribution.referrer_reward_paise);
+
+        this.data.wallet_transactions.unshift({
+          id: `wtxn-${crypto.randomUUID()}`,
+          user_id: attribution.referrer_user_id,
+          transaction_type: 'referral_reward_reversal',
+          amount_paise: -attribution.referrer_reward_paise,
+          balance_after_paise: newBalance,
+          reference_type: 'refund_revoke',
+          reference_id: entitlement.id,
+          description: `Referral reward reversed due to purchase revocation/refund (${reason})`,
+          created_at: now,
+        });
+      }
+
+      attribution.status = 'reversed';
+      attribution.reversed_at = now;
+      attribution.updated_at = now;
+      entitlement.reward_status = 'reversed';
+
+      this.logAudit(
+        actorId,
+        actorEmail,
+        'REFERRAL_REWARD_REVERSED',
+        'referral_attribution',
+        attribution.id,
+        `Reversed referral reward (${attribution.referrer_reward_paise} paise) for purchase ${entitlement.id}. Reason: ${reason}`
+      );
+    }
+
+    const order = this.data.payment_orders.find(
+      (o) => o.user_id === entitlement.user_id && o.subject_id === entitlement.subject_id && o.status === 'paid'
+    );
+    if (order && entitlement.reward_status === 'reversed') {
+      order.reward_status = 'reversed';
+      order.updated_at = now;
+    }
+
+    this.persist();
   }
 
   /**

@@ -21,6 +21,14 @@ services:
         sync: false
       - key: JWT_SECRET
         sync: false
+      - key: ADMIN_NAME
+        value: Prime Seven
+      - key: ADMIN_EMAIL
+        value: primeseven@gmail.com
+      - key: ADMIN_INITIAL_PASSWORD
+        sync: false
+      - key: ADMIN_SETUP_SECRET
+        sync: false
       - key: RAZORPAY_KEY_ID
         sync: false
       - key: RAZORPAY_KEY_SECRET
@@ -29,3 +37,4 @@ services:
         sync: false
       - key: CORS_ORIGIN
         sync: false
+

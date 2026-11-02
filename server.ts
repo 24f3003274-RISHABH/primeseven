@@ -9,6 +9,9 @@ import { optionalAuth, requireAuth, requireAdmin, AuthRequest } from './src/back
 import {
   signAuthToken,
   hashPassword,
+  verifyPassword,
+  safeCompareSecret,
+  getOfficialAdminConfig,
   getRuntimeHmacSecret,
 } from './src/backend/firebase-admin.ts';
 import { canAccessTest } from './src/backend/services/accessControlService.ts';
@@ -93,6 +96,7 @@ async function startServer() {
 
   // Rate limiting on sensitive payment and auth mutation endpoints
   const paymentRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 60 });
+  const authRateLimiter = createRateLimiter({ windowMs: 60_000, maxRequests: 30 });
 
   // ============================================================================
   // 1. HEALTH & PUBLIC METADATA ENDPOINTS (/health and /api/v1/health)
@@ -152,17 +156,35 @@ async function startServer() {
   // ============================================================================
   app.post(
     '/api/v1/auth/register',
+    authRateLimiter,
     validateBody(
       z.object({
         full_name: z.string().min(2).max(120),
         email: z.string().email(),
         password: z.string().min(6).max(128),
+        confirm_password: z.string().optional(),
+        referral_code: z.string().max(40).optional(),
       })
     ),
     (req, res) => {
       const email = req.body.email.toLowerCase().trim();
       const fullName = req.body.full_name.trim();
-      const passwordHash = hashPassword(req.body.password);
+      const rawPassword = req.body.password;
+      const confirmPassword = req.body.confirm_password;
+      const rawReferralCode = (req.body.referral_code || '').trim().toUpperCase();
+      const adminConfig = getOfficialAdminConfig();
+
+      if (confirmPassword !== undefined && confirmPassword !== rawPassword) {
+        res.status(400).json({ error: 'Passwords do not match.' });
+        return;
+      }
+
+      if (email === adminConfig.adminEmail) {
+        res.status(403).json({
+          error: 'This email address is reserved for platform administration and cannot be registered publicly.',
+        });
+        return;
+      }
 
       const existing = store.db.users.find((u) => u.email.toLowerCase() === email);
       if (existing && existing.password_hash) {
@@ -172,11 +194,62 @@ async function startServer() {
         return;
       }
 
+      // Check referral code if provided on registration
+      let validReferrer = null;
+      if (rawReferralCode && store.db.referral_settings?.is_enabled) {
+        const candidateReferrer = store.db.users.find(
+          (u) =>
+            u.role === 'student' &&
+            u.account_status === 'active' &&
+            u.referral_code &&
+            u.referral_code.toUpperCase() === rawReferralCode &&
+            u.email.toLowerCase() !== email
+        );
+        if (candidateReferrer) {
+          validReferrer = candidateReferrer;
+        }
+      }
+
+      const now = new Date().toISOString();
+      const passwordHash = hashPassword(rawPassword);
       const uid = existing ? existing.id : `usr-${crypto.randomUUID()}`;
       const user = store.upsertUser(uid, email, fullName);
       user.full_name = fullName;
+      user.role = 'student';
       user.password_hash = passwordHash;
-      user.updated_at = new Date().toISOString();
+      user.must_change_password = false;
+      user.updated_at = now;
+      store.ensureUserReferralCode(user, false);
+
+      // Attach referrer ONLY if new account and not self-referral
+      if (validReferrer && validReferrer.id !== user.id && !user.referred_by_user_id) {
+        user.referred_by_user_id = validReferrer.id;
+        user.referred_by_code = validReferrer.referral_code || rawReferralCode;
+
+        const existingAttr = store.db.referral_attributions.find(
+          (ra) => ra.referred_user_id === user.id
+        );
+        if (!existingAttr) {
+          store.db.referral_attributions.unshift({
+            id: `refattr-${crypto.randomUUID()}`,
+            referrer_user_id: validReferrer.id,
+            referred_user_id: user.id,
+            referral_code: validReferrer.referral_code || rawReferralCode,
+            status: 'registered',
+            order_id: null,
+            purchase_id: null,
+            subject_id: null,
+            original_amount_paise: 0,
+            friend_discount_paise: 0,
+            referrer_reward_paise: 0,
+            rewarded_at: null,
+            reversed_at: null,
+            created_at: now,
+            updated_at: now,
+          });
+        }
+      }
+
       store.persist();
 
       const token = signAuthToken({
@@ -186,45 +259,54 @@ async function startServer() {
         role: user.role,
       });
 
-      res.status(201).json({ token, user });
+      res.status(201).json({ token, user: store.sanitizeUser(user) });
     }
   );
 
   app.post(
     '/api/v1/auth/login',
+    authRateLimiter,
     validateBody(
       z.object({
         email: z.string().email(),
-        password: z.string().optional().default(''),
-        full_name: z.string().optional(),
+        password: z.string().min(1, 'Password is required'),
       })
     ),
     (req, res) => {
       const email = req.body.email.toLowerCase().trim();
-      const rawPassword = req.body.password || '';
-      const passwordHash = rawPassword ? hashPassword(rawPassword) : '';
+      const rawPassword = req.body.password;
+      const adminConfig = getOfficialAdminConfig();
 
-      let user = store.db.users.find((u) => u.email.toLowerCase() === email);
-      if (user) {
-        if (user.account_status === 'suspended') {
-          res.status(403).json({ error: 'Your account has been suspended by an administrator.' });
+      if (email === adminConfig.adminEmail) {
+        store.ensureOfficialAdminAccount();
+      }
+
+      const user = store.db.users.find((u) => u.email.toLowerCase() === email);
+      if (!user) {
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      if (user.account_status === 'suspended') {
+        res.status(403).json({ error: 'Your account has been suspended by an administrator.' });
+        return;
+      }
+
+      if (!user.password_hash) {
+        if (email === adminConfig.adminEmail) {
+          res.status(403).json({
+            error:
+              'Official administrator account is provisioned, but its initial password has not been set yet. Configure ADMIN_INITIAL_PASSWORD in environment variables or initialize via POST /api/v1/admin/bootstrap.',
+          });
           return;
         }
-        if (user.password_hash && rawPassword && user.password_hash !== passwordHash) {
-          res.status(401).json({ error: 'Invalid email or password.' });
-          return;
-        }
-        if (!user.password_hash && passwordHash) {
-          user.password_hash = passwordHash;
-          store.persist();
-        }
-      } else {
-        const uid = `usr-${crypto.randomUUID()}`;
-        user = store.upsertUser(uid, email, req.body.full_name || email.split('@')[0]);
-        if (passwordHash) {
-          user.password_hash = passwordHash;
-        }
-        store.persist();
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
+      }
+
+      if (!verifyPassword(rawPassword, user.password_hash)) {
+        res.status(401).json({ error: 'Invalid email or password.' });
+        return;
       }
 
       const token = signAuthToken({
@@ -234,9 +316,258 @@ async function startServer() {
         role: user.role,
       });
 
-      res.json({ token, user });
+      res.json({ token, user: store.sanitizeUser(user) });
     }
   );
+
+  // One-time protected administrator bootstrap endpoint (permanently closes once admin password is set)
+  app.post(
+    '/api/v1/admin/bootstrap',
+    authRateLimiter,
+    validateBody(
+      z.object({
+        setup_secret: z.string().min(1),
+        password: z.string().min(8).max(128),
+        full_name: z.string().min(2).max(120).optional(),
+      })
+    ),
+    (req, res) => {
+      const adminConfig = getOfficialAdminConfig();
+      if (!adminConfig.setupSecret) {
+        res.status(503).json({
+          error: 'ADMIN_SETUP_SECRET is not configured on the server. Bootstrap endpoint is disabled.',
+        });
+        return;
+      }
+
+      if (!safeCompareSecret(req.body.setup_secret, adminConfig.setupSecret)) {
+        res.status(403).json({ error: 'Invalid administrator setup secret.' });
+        return;
+      }
+
+      const adminUser = store.ensureOfficialAdminAccount();
+      if (adminUser.password_hash) {
+        res.status(403).json({
+          error:
+            'Administrator bootstrap is permanently closed because the official administrator password has already been initialized.',
+        });
+        return;
+      }
+
+      adminUser.full_name = (req.body.full_name || adminConfig.adminName).trim();
+      adminUser.role = 'admin';
+      adminUser.account_status = 'active';
+      adminUser.password_hash = hashPassword(req.body.password);
+      adminUser.must_change_password = false;
+      adminUser.updated_at = new Date().toISOString();
+
+      store.logAudit(
+        adminUser.id,
+        adminUser.email,
+        'ADMIN_BOOTSTRAP_INITIALIZED',
+        'user',
+        adminUser.id,
+        `Initialized official administrator account (${adminUser.full_name} <${adminUser.email}>) via protected bootstrap`
+      );
+
+      res.status(201).json({
+        status: 'bootstrapped',
+        user: store.sanitizeUser(adminUser),
+      });
+    }
+  );
+
+  // Authenticated password change endpoint (supports both students and Prime Seven admin)
+  app.post(
+    '/api/v1/auth/change-password',
+    authRateLimiter,
+    requireAuth,
+    validateBody(
+      z.object({
+        current_password: z.string().min(1),
+        new_password: z.string().min(6).max(128),
+        confirm_new_password: z.string().optional(),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const user = req.userProfile!;
+      const { current_password, new_password, confirm_new_password } = req.body;
+
+      if (confirm_new_password !== undefined && confirm_new_password !== new_password) {
+        res.status(400).json({ error: 'New passwords do not match.' });
+        return;
+      }
+
+      if (!user.password_hash || !verifyPassword(current_password, user.password_hash)) {
+        res.status(401).json({ error: 'Current password is incorrect.' });
+        return;
+      }
+
+      if (current_password === new_password) {
+        res.status(400).json({
+          error: 'New password must be different from your current password.',
+        });
+        return;
+      }
+
+      user.password_hash = hashPassword(new_password);
+      user.must_change_password = false;
+      user.updated_at = new Date().toISOString();
+
+      store.logAudit(
+        user.id,
+        user.email,
+        'USER_PASSWORD_CHANGED',
+        'user',
+        user.id,
+        `Password updated for account ${user.email}`
+      );
+
+      const rotatedToken = signAuthToken({
+        uid: user.id,
+        email: user.email,
+        name: user.full_name,
+        role: user.role,
+      });
+
+      res.json({
+        status: 'password_updated',
+        token: rotatedToken,
+        user: store.sanitizeUser(user),
+      });
+    }
+  );
+
+  // Public lookup for referral/promo code banner on /register?ref=CODE
+  app.get('/api/v1/referrals/lookup/:code', (req, res) => {
+    const rawCode = (req.params.code || '').trim().toUpperCase();
+    if (!rawCode) {
+      res.status(404).json({ valid: false });
+      return;
+    }
+
+    const referrer = store.db.users.find(
+      (u) =>
+        u.role === 'student' &&
+        u.account_status === 'active' &&
+        u.referral_code &&
+        u.referral_code.toUpperCase() === rawCode
+    );
+
+    if (referrer && store.db.referral_settings?.is_enabled) {
+      res.json({
+        valid: true,
+        type: 'referral',
+        code: referrer.referral_code,
+        referrer_name: referrer.full_name,
+        friend_discount_percent: store.db.referral_settings.friend_discount_percent || 10,
+      });
+      return;
+    }
+
+    const agent = store.db.sales_agents.find(
+      (a) => a.status === 'active' && a.promo_code.toUpperCase() === rawCode
+    );
+    if (agent) {
+      res.json({
+        valid: true,
+        type: 'agent',
+        code: agent.promo_code,
+        agent_name: agent.name,
+        friend_discount_percent: agent.discount_percent || 10,
+      });
+      return;
+    }
+
+    res.json({ valid: false });
+  });
+
+  // Student Refer-a-Friend & Wallet Dashboard API
+  app.get('/api/v1/referrals/my', requireAuth, (req: AuthRequest, res) => {
+    const user = req.userProfile!;
+    const referralCode = store.ensureUserReferralCode(user);
+    const refSettings = store.db.referral_settings;
+
+    const myAttributions = (store.db.referral_attributions || []).filter(
+      (ra) => ra.referrer_user_id === user.id
+    );
+
+    const rewardedAttributions = myAttributions.filter((ra) => ra.status === 'rewarded');
+    const pendingAttributions = myAttributions.filter(
+      (ra) => ra.status === 'registered' || ra.status === 'pending_payment'
+    );
+    const reversedAttributions = myAttributions.filter((ra) => ra.status === 'reversed');
+
+    const totalRewardsEarnedPaise = rewardedAttributions.reduce(
+      (sum, ra) => sum + (ra.referrer_reward_paise || 0),
+      0
+    );
+    const availableWalletCreditPaise = store.getUserWalletBalancePaise(user.id);
+
+    const referralsList = myAttributions.map((ra) => {
+      const friend = store.db.users.find((u) => u.id === ra.referred_user_id);
+      const subj = ra.subject_id
+        ? store.db.subjects.find((s) => s.id === ra.subject_id)
+        : null;
+      const emailParts = (friend?.email || 'student@example.com').split('@');
+      const maskedEmail =
+        emailParts[0].length > 2
+          ? `${emailParts[0].slice(0, 2)}***@${emailParts[1] || 'mail.com'}`
+          : `***@${emailParts[1] || 'mail.com'}`;
+
+      return {
+        id: ra.id,
+        referred_student_name: friend?.full_name || 'Candidate',
+        referred_student_email: maskedEmail,
+        referred_user_name: friend?.full_name || 'Candidate',
+        referred_user_email: maskedEmail,
+        status: ra.status,
+        subject_name: subj?.name || null,
+        original_amount_paise: ra.original_amount_paise,
+        friend_discount_paise: ra.friend_discount_paise,
+        referrer_reward_paise: ra.referrer_reward_paise,
+        created_at: ra.created_at,
+        rewarded_at: ra.rewarded_at,
+      };
+    });
+
+    const walletLedger = (store.db.wallet_transactions || []).filter(
+      (wt) => wt.user_id === user.id
+    );
+
+    let referredByInfo = null;
+    if (user.referred_by_user_id) {
+      const referrer = store.db.users.find((u) => u.id === user.referred_by_user_id);
+      const completedPurchases = store.db.purchases.filter(
+        (p) => p.user_id === user.id && p.entitlement_status === 'active'
+      );
+      if (referrer) {
+        referredByInfo = {
+          referrer_name: referrer.full_name,
+          referral_code: user.referred_by_code || referrer.referral_code || '',
+          eligible_for_first_purchase_discount:
+            Boolean(refSettings?.is_enabled) && completedPurchases.length === 0,
+          friend_discount_percent: refSettings?.friend_discount_percent || 10,
+        };
+      }
+    }
+
+    res.json({
+      referral_code: referralCode,
+      referral_settings: refSettings,
+      referred_by: referredByInfo,
+      stats: {
+        total_friends_referred: myAttributions.length,
+        successful_referral_purchases: rewardedAttributions.length,
+        pending_referrals: pendingAttributions.length,
+        reversed_referrals: reversedAttributions.length,
+        total_rewards_earned_paise: totalRewardsEarnedPaise,
+        available_wallet_credit_paise: availableWalletCreditPaise,
+      },
+      referrals: referralsList,
+      wallet_ledger: walletLedger,
+    });
+  });
 
   app.get('/api/v1/bookmarks/my', requireAuth, (req: AuthRequest, res) => {
     const user = req.userProfile!;
@@ -301,7 +632,7 @@ async function startServer() {
     const myAttempts = store.db.attempts.filter((a) => a.user_id === profile.id);
 
     res.json({
-      user: profile,
+      user: store.sanitizeUser(profile),
       purchased_subject_ids: myPurchases.map((p) => p.subject_id),
       stats: {
         purchased_subjects_count: myPurchases.length,
@@ -321,22 +652,22 @@ async function startServer() {
       user.full_name = req.body.full_name.trim();
       user.updated_at = new Date().toISOString();
       store.persist();
-      res.json({ user });
+      res.json({ user: store.sanitizeUser(user) });
     }
   );
 
-  // Audited role switch for preview & verification of Student vs Admin workflows
+  // Audited role switch strictly restricted to official platform administrators
   app.post(
     '/api/v1/auth/switch-role',
     requireAuth,
     validateBody(z.object({ target_role: z.enum(['student', 'admin']) })),
     (req: AuthRequest, res) => {
       const user = req.userProfile!;
-      const isBootstrapAdmin =
-        user.email.toLowerCase() === 'rishabhkesharwani8218@gmail.com';
-      if (process.env.NODE_ENV === 'production' && !isBootstrapAdmin && user.role !== 'admin') {
+      const adminConfig = getOfficialAdminConfig();
+      const isOfficialAdmin = user.email.toLowerCase() === adminConfig.adminEmail;
+      if (!isOfficialAdmin && user.role !== 'admin') {
         res.status(403).json({
-          error: 'Role switching is restricted to authorized platform administrators in production.',
+          error: 'Role switching is restricted to authorized platform administrators.',
         });
         return;
       }
@@ -351,7 +682,7 @@ async function startServer() {
         user.id,
         `Switched active workspace role from ${prevRole} to ${user.role}`
       );
-      res.json({ user });
+      res.json({ user: store.sanitizeUser(user) });
     }
   );
 
@@ -626,7 +957,7 @@ async function startServer() {
   });
 
   // ============================================================================
-  // 4. SUBJECT-SERIES PACKAGES & SECURE RAZORPAY PAYMENT FLOW
+  // 4. SUBJECT-SERIES PACKAGES, PROMO VALIDATION & SECURE RAZORPAY PAYMENT FLOW
   // ============================================================================
   app.get('/api/v1/packages/:subjectSlug', optionalAuth, (req: AuthRequest, res) => {
     const userId = req.userProfile?.id || null;
@@ -649,10 +980,24 @@ async function startServer() {
     );
     const isPurchased = userId ? store.hasSubjectEntitlement(userId, subject.id) : false;
 
+    // Check if logged-in student has an automatic first-purchase referral discount available
+    let autoReferralOffer = null;
+    if (userId && !isPurchased && req.userProfile?.referred_by_code) {
+      const check = store.validateDiscountCode(
+        userId,
+        subject.id,
+        req.userProfile.referred_by_code
+      );
+      if (check.valid) {
+        autoReferralOffer = check;
+      }
+    }
+
     res.json({
       subject,
       package: pkg,
       is_purchased: isPurchased,
+      auto_referral_offer: autoReferralOffer,
       total_tests: publishedTests.length,
       category_counts: {
         sectional: publishedTests.filter((t) => t.category_slug === 'sectional').length,
@@ -663,65 +1008,217 @@ async function startServer() {
     });
   });
 
-  // Step 1: Create Razorpay Order on Server
+  // Authoritative Promo & Referral Code Validation Endpoint
+  app.post(
+    '/api/v1/promo/validate',
+    paymentRateLimiter,
+    optionalAuth,
+    validateBody(
+      z.object({
+        subject_id: z.string().optional(),
+        package_id: z.string().optional(),
+        promo_code: z.string().max(50).optional(),
+        code: z.string().max(50).optional(),
+        current_applied_code: z.string().optional().nullable(),
+        currently_applied_code: z.string().optional().nullable(),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const userId = req.userProfile?.id || null;
+      const {
+        subject_id,
+        package_id,
+        promo_code,
+        code,
+        current_applied_code,
+        currently_applied_code,
+      } = req.body;
+
+      const resolvedSubjectId =
+        subject_id ||
+        (package_id ? store.db.packages.find((p) => p.id === package_id)?.subject_id : undefined) ||
+        '';
+      const normalizedNew = (promo_code || code || '').trim().toUpperCase();
+      const normalizedCurrent = (current_applied_code || currently_applied_code || '')
+        .trim()
+        .toUpperCase();
+
+      if (!resolvedSubjectId || !normalizedNew) {
+        res.status(400).json({
+          valid: false,
+          error: 'Invalid promo code.',
+          message: 'Invalid promo code.',
+        });
+        return;
+      }
+
+      if (normalizedCurrent && normalizedCurrent !== normalizedNew) {
+        const pkg = store.db.packages.find((p) => p.subject_id === resolvedSubjectId);
+        const basePrice = pkg?.price_paise || 0;
+        res.status(400).json({
+          valid: false,
+          error: 'Another discount is already applied.',
+          message: 'Another discount is already applied.',
+          original_amount_paise: basePrice,
+          discount_amount_paise: 0,
+          final_amount_paise: basePrice,
+        });
+        return;
+      }
+
+      const result = store.validateDiscountCode(userId, resolvedSubjectId, normalizedNew);
+      if (!result.valid) {
+        res.status(400).json({
+          ...result,
+          error: result.message,
+        });
+        return;
+      }
+
+      res.json({
+        ...result,
+        additional_charges_paise: 0,
+      });
+    }
+  );
+
+  // Step 1: Create Razorpay Order on Server (Enforces authoritative backend discount calculation)
   app.post(
     '/api/v1/payments/create-order',
     paymentRateLimiter,
     requireAuth,
-    validateBody(z.object({ package_id: z.string().min(1) })),
+    validateBody(
+      z.object({
+        package_id: z.string().min(1),
+        promo_code: z.string().max(50).optional().nullable(),
+      })
+    ),
     (req: AuthRequest, res) => {
-      const parsed = { data: req.body as { package_id: string } };
+      const parsed = {
+        data: req.body as { package_id: string; promo_code?: string | null },
+      };
 
-    const user = req.userProfile!;
-    const pkg = store.db.packages.find((p) => p.id === parsed.data.package_id);
-    if (!pkg || !pkg.is_available_for_sale) {
-      res.status(400).json({ error: 'This subject package is not currently available for sale.' });
-      return;
-    }
+      const user = req.userProfile!;
+      const pkg = store.db.packages.find((p) => p.id === parsed.data.package_id);
+      if (!pkg || !pkg.is_available_for_sale) {
+        res.status(400).json({ error: 'This subject package is not currently available for sale.' });
+        return;
+      }
 
-    // Prevent duplicate purchase if already owned
-    if (store.hasSubjectEntitlement(user.id, pkg.subject_id)) {
-      res.status(409).json({
-        error: 'You already own this Subject Test Series. Duplicate purchases are blocked.',
-      });
-      return;
-    }
+      // Prevent duplicate purchase if already owned
+      if (store.hasSubjectEntitlement(user.id, pkg.subject_id)) {
+        res.status(409).json({
+          error: 'You already own this Subject Test Series. Duplicate purchases are blocked.',
+        });
+        return;
+      }
 
-    const now = new Date().toISOString();
-    const gatewayOrderId = `order_rzp_${crypto.randomBytes(8).toString('hex')}`;
-    const order = {
-      id: `ord-${crypto.randomUUID()}`,
-      user_id: user.id,
-      package_id: pkg.id,
-      subject_id: pkg.subject_id,
-      gateway: 'razorpay' as const,
-      gateway_order_id: gatewayOrderId,
-      expected_amount_paise: pkg.price_paise, // Strictly from PostgreSQL/Server Store
-      currency: 'INR' as const,
-      status: 'pending' as const,
-      created_at: now,
-      updated_at: now,
-    };
+      const originalAmountPaise = pkg.price_paise;
+      let discountAmountPaise = 0;
+      let finalAmountPaise = originalAmountPaise;
+      let appliedCode: string | null = null;
+      let promoType: 'agent' | 'campaign' | 'referral' | null = null;
+      let agentId: string | null = null;
+      let referrerUserId: string | null = null;
 
-    store.db.payment_orders.unshift(order);
-    store.persist();
+      const requestedCode = (parsed.data.promo_code || '').trim();
+      if (requestedCode) {
+        const validation = store.validateDiscountCode(user.id, pkg.subject_id, requestedCode);
+        if (!validation.valid) {
+          res.status(400).json({ error: validation.message, validation });
+          return;
+        }
+        discountAmountPaise = validation.discount_amount_paise;
+        finalAmountPaise = validation.final_amount_paise;
+        appliedCode = validation.code;
+        promoType = validation.discount_type;
+        agentId = validation.agent_id;
+        referrerUserId = validation.referrer_user_id;
+      }
 
-    const subject = store.db.subjects.find((s) => s.id === pkg.subject_id);
-
-    res.json({
-      order,
-      razorpay_config: {
-        key_id: RAZORPAY_KEY_ID,
+      const now = new Date().toISOString();
+      const gatewayOrderId = `order_rzp_${crypto.randomBytes(8).toString('hex')}`;
+      const order = {
+        id: `ord-${crypto.randomUUID()}`,
+        user_id: user.id,
+        package_id: pkg.id,
+        subject_id: pkg.subject_id,
+        gateway: 'razorpay' as const,
         gateway_order_id: gatewayOrderId,
-        amount_paise: order.expected_amount_paise,
-        currency: order.currency,
-        package_name: pkg.package_name,
-        subject_name: subject?.name || '',
-        student_name: user.full_name,
-        student_email: user.email,
-      },
-    });
-  });
+        expected_amount_paise: finalAmountPaise, // Strictly calculated on backend
+        original_amount_paise: originalAmountPaise,
+        discount_amount_paise: discountAmountPaise,
+        final_amount_paise: finalAmountPaise,
+        promo_code: appliedCode,
+        promo_type: promoType,
+        agent_id: agentId,
+        referrer_user_id: referrerUserId,
+        reward_status: (promoType ? 'pending' : 'none') as 'none' | 'pending' | 'granted' | 'reversed',
+        currency: 'INR' as const,
+        status: 'pending' as const,
+        created_at: now,
+        updated_at: now,
+      };
+
+      // If this is a student referral checkout, mark attribution as pending_payment (never rewarded until captured)
+      if (promoType === 'referral' && referrerUserId) {
+        let attr = store.db.referral_attributions.find(
+          (ra) => ra.referred_user_id === user.id
+        );
+        if (!attr) {
+          attr = {
+            id: `refattr-${crypto.randomUUID()}`,
+            referrer_user_id: referrerUserId,
+            referred_user_id: user.id,
+            referral_code: appliedCode || '',
+            status: 'pending_payment',
+            order_id: order.id,
+            purchase_id: null,
+            subject_id: pkg.subject_id,
+            original_amount_paise: originalAmountPaise,
+            friend_discount_paise: discountAmountPaise,
+            referrer_reward_paise: 0,
+            rewarded_at: null,
+            reversed_at: null,
+            created_at: now,
+            updated_at: now,
+          };
+          store.db.referral_attributions.unshift(attr);
+        } else if (attr.status === 'registered') {
+          attr.status = 'pending_payment';
+          attr.order_id = order.id;
+          attr.subject_id = pkg.subject_id;
+          attr.original_amount_paise = originalAmountPaise;
+          attr.friend_discount_paise = discountAmountPaise;
+          attr.updated_at = now;
+        }
+      }
+
+      store.db.payment_orders.unshift(order);
+      store.persist();
+
+      const subject = store.db.subjects.find((s) => s.id === pkg.subject_id);
+
+      res.json({
+        order,
+        razorpay_config: {
+          key_id: RAZORPAY_KEY_ID,
+          gateway_order_id: gatewayOrderId,
+          amount_paise: order.expected_amount_paise,
+          original_amount_paise: originalAmountPaise,
+          discount_amount_paise: discountAmountPaise,
+          final_amount_paise: finalAmountPaise,
+          promo_code: appliedCode,
+          promo_type: promoType,
+          currency: order.currency,
+          package_name: pkg.package_name,
+          subject_name: subject?.name || '',
+          student_name: user.full_name,
+          student_email: user.email,
+        },
+      });
+    }
+  );
 
   // Helper endpoint for Razorpay Test Mode Checkout in preview sandbox:
   // Generates a test payment ID and authentic HMAC-SHA256 signature (or simulated pending/failed state)
@@ -748,7 +1245,7 @@ async function startServer() {
     const gatewayPaymentId = `pay_rzp_${crypto.randomBytes(8).toString('hex')}`;
 
     if (parsed.data.simulation_mode === 'pending') {
-      // Record pending transaction; do NOT grant entitlement
+      // Record pending transaction; do NOT grant entitlement or rewards
       store.db.payment_transactions.unshift({
         id: `txn-${crypto.randomUUID()}`,
         order_id: order.id,
@@ -827,141 +1324,153 @@ async function startServer() {
     (req: AuthRequest, res) => {
       const parsed = { data: req.body };
 
-    const user = req.userProfile!;
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount_paise } =
-      parsed.data;
+      const user = req.userProfile!;
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature, amount_paise } =
+        parsed.data;
 
-    const order = store.db.payment_orders.find((o) => o.gateway_order_id === razorpay_order_id);
-    if (!order) {
-      res.status(404).json({ error: 'Payment order not found.' });
-      return;
-    }
+      const order = store.db.payment_orders.find((o) => o.gateway_order_id === razorpay_order_id);
+      if (!order) {
+        res.status(404).json({ error: 'Payment order not found.' });
+        return;
+      }
 
-    // Security check: Prevent a user from claiming another user's order
-    if (order.user_id !== user.id) {
-      store.logAudit(
-        user.id,
-        user.email,
-        'PAYMENT_CROSS_USER_ATTEMPT_BLOCKED',
-        'payment_order',
-        order.id,
-        `User ${user.id} attempted to verify order owned by ${order.user_id}`
+      // Security check: Prevent a user from claiming another user's order
+      if (order.user_id !== user.id) {
+        store.logAudit(
+          user.id,
+          user.email,
+          'PAYMENT_CROSS_USER_ATTEMPT_BLOCKED',
+          'payment_order',
+          order.id,
+          `User ${user.id} attempted to verify order owned by ${order.user_id}`
+        );
+        res.status(403).json({ error: 'Order ownership mismatch. Verification rejected.' });
+        return;
+      }
+
+      // Security check: Reject price tampering if client sent a mismatched amount
+      if (amount_paise !== undefined && amount_paise !== order.expected_amount_paise) {
+        store.logAudit(
+          user.id,
+          user.email,
+          'PAYMENT_AMOUNT_TAMPER_REJECTED',
+          'payment_order',
+          order.id,
+          `Expected ${order.expected_amount_paise} paise, got ${amount_paise} paise`
+        );
+        res.status(400).json({ error: 'Payment amount tampering detected. Verification rejected.' });
+        return;
+      }
+
+      // Security check: Verify HMAC-SHA256 signature
+      const expectedSignature = computeRazorpaySignature(razorpay_order_id, razorpay_payment_id);
+      if (expectedSignature !== razorpay_signature) {
+        order.status = 'failed';
+        order.updated_at = new Date().toISOString();
+        store.db.payment_transactions.unshift({
+          id: `txn-${crypto.randomUUID()}`,
+          order_id: order.id,
+          user_id: user.id,
+          gateway_payment_id: razorpay_payment_id,
+          payment_status: 'failed',
+          verification_status: 'rejected',
+          amount_paise: order.expected_amount_paise,
+          currency: 'INR',
+          gateway_reference: 'INVALID_HMAC_SIGNATURE',
+          verified_at: null,
+          created_at: new Date().toISOString(),
+        });
+        store.logAudit(
+          user.id,
+          user.email,
+          'PAYMENT_SIGNATURE_INVALID',
+          'payment_order',
+          order.id,
+          `Rejected forged Razorpay signature for order ${razorpay_order_id}`
+        );
+        res.status(400).json({
+          error: 'Cryptographic payment signature verification failed. Entitlement denied.',
+        });
+        return;
+      }
+
+      // Idempotency check: If already paid, return existing entitlement without re-issuing rewards
+      const existingEntitlement = store.db.purchases.find(
+        (p) =>
+          p.user_id === user.id &&
+          p.subject_id === order.subject_id &&
+          p.entitlement_status === 'active'
       );
-      res.status(403).json({ error: 'Order ownership mismatch. Verification rejected.' });
-      return;
-    }
+      if (existingEntitlement) {
+        res.json({
+          verified: true,
+          entitlement: existingEntitlement,
+          message: 'Subject series is already unlocked.',
+        });
+        return;
+      }
 
-    // Security check: Reject price tampering if client sent a mismatched amount
-    if (amount_paise !== undefined && amount_paise !== order.expected_amount_paise) {
-      store.logAudit(
-        user.id,
-        user.email,
-        'PAYMENT_AMOUNT_TAMPER_REJECTED',
-        'payment_order',
-        order.id,
-        `Expected ${order.expected_amount_paise} paise, got ${amount_paise} paise`
-      );
-      res.status(400).json({ error: 'Payment amount tampering detected. Verification rejected.' });
-      return;
-    }
+      // Record verified transaction and grant subject entitlement
+      const now = new Date().toISOString();
+      order.status = 'paid';
+      order.updated_at = now;
 
-    // Security check: Verify HMAC-SHA256 signature
-    const expectedSignature = computeRazorpaySignature(razorpay_order_id, razorpay_payment_id);
-    if (expectedSignature !== razorpay_signature) {
-      order.status = 'failed';
-      order.updated_at = new Date().toISOString();
-      store.db.payment_transactions.unshift({
+      const transaction = {
         id: `txn-${crypto.randomUUID()}`,
         order_id: order.id,
         user_id: user.id,
         gateway_payment_id: razorpay_payment_id,
-        payment_status: 'failed',
-        verification_status: 'rejected',
+        payment_status: 'captured' as const,
+        verification_status: 'verified' as const,
         amount_paise: order.expected_amount_paise,
-        currency: 'INR',
-        gateway_reference: 'INVALID_HMAC_SIGNATURE',
-        verified_at: null,
-        created_at: new Date().toISOString(),
-      });
+        currency: 'INR' as const,
+        gateway_reference: razorpay_order_id,
+        verified_at: now,
+        created_at: now,
+      };
+      store.db.payment_transactions.unshift(transaction);
+
+      const entitlement = {
+        id: `ent-${crypto.randomUUID()}`,
+        user_id: user.id,
+        package_id: order.package_id,
+        subject_id: order.subject_id,
+        payment_transaction_id: transaction.id,
+        entitlement_status: 'active' as const,
+        original_amount_paise: order.original_amount_paise ?? order.expected_amount_paise,
+        discount_amount_paise: order.discount_amount_paise ?? 0,
+        final_amount_paise: order.final_amount_paise ?? order.expected_amount_paise,
+        promo_code: order.promo_code || null,
+        promo_type: order.promo_type || null,
+        agent_id: order.agent_id || null,
+        referrer_user_id: order.referrer_user_id || null,
+        reward_status: order.reward_status || 'none',
+        purchased_at: now,
+        created_at: now,
+        updated_at: now,
+      };
+      store.db.purchases.unshift(entitlement);
+
+      // Process Sales Agent attribution or Referrer Wallet Reward strictly after verified capture
+      store.processVerifiedPurchaseAttributionAndRewards(order, transaction, entitlement);
+
       store.logAudit(
         user.id,
         user.email,
-        'PAYMENT_SIGNATURE_INVALID',
-        'payment_order',
-        order.id,
-        `Rejected forged Razorpay signature for order ${razorpay_order_id}`
+        'SUBJECT_SERIES_PURCHASE_VERIFIED',
+        'subject',
+        order.subject_id,
+        `Verified payment ${razorpay_payment_id} (${order.expected_amount_paise} paise${order.promo_code ? `, promo=${order.promo_code}` : ''}) and unlocked subject ${order.subject_id}`
       );
-      res.status(400).json({
-        error: 'Cryptographic payment signature verification failed. Entitlement denied.',
-      });
-      return;
-    }
 
-    // Idempotency check: If already paid, return existing entitlement
-    const existingEntitlement = store.db.purchases.find(
-      (p) =>
-        p.user_id === user.id &&
-        p.subject_id === order.subject_id &&
-        p.entitlement_status === 'active'
-    );
-    if (existingEntitlement) {
       res.json({
         verified: true,
-        entitlement: existingEntitlement,
-        message: 'Subject series is already unlocked.',
+        order,
+        transaction,
+        entitlement,
       });
-      return;
     }
-
-    // Record verified transaction and grant subject entitlement
-    const now = new Date().toISOString();
-    order.status = 'paid';
-    order.updated_at = now;
-
-    const transaction = {
-      id: `txn-${crypto.randomUUID()}`,
-      order_id: order.id,
-      user_id: user.id,
-      gateway_payment_id: razorpay_payment_id,
-      payment_status: 'captured' as const,
-      verification_status: 'verified' as const,
-      amount_paise: order.expected_amount_paise,
-      currency: 'INR' as const,
-      gateway_reference: razorpay_order_id,
-      verified_at: now,
-      created_at: now,
-    };
-    store.db.payment_transactions.unshift(transaction);
-
-    const entitlement = {
-      id: `ent-${crypto.randomUUID()}`,
-      user_id: user.id,
-      package_id: order.package_id,
-      subject_id: order.subject_id,
-      payment_transaction_id: transaction.id,
-      entitlement_status: 'active' as const,
-      purchased_at: now,
-      created_at: now,
-      updated_at: now,
-    };
-    store.db.purchases.unshift(entitlement);
-
-    store.logAudit(
-      user.id,
-      user.email,
-      'SUBJECT_SERIES_PURCHASE_VERIFIED',
-      'subject',
-      order.subject_id,
-      `Verified payment ${razorpay_payment_id} (${order.expected_amount_paise} paise) and unlocked subject ${order.subject_id}`
-    );
-
-    res.json({
-      verified: true,
-      order,
-      transaction,
-      entitlement,
-    });
-  });
+  );
 
   // Order status check endpoint
   app.get('/api/v1/payments/orders/:orderId/status', requireAuth, (req: AuthRequest, res) => {
@@ -1039,30 +1548,43 @@ async function startServer() {
         order.status = 'paid';
         order.updated_at = now;
         const txnId = `txn-${crypto.randomUUID()}`;
-        store.db.payment_transactions.unshift({
+        const transaction = {
           id: txnId,
           order_id: order.id,
           user_id: order.user_id,
           gateway_payment_id: gatewayPaymentId,
-          payment_status: 'captured',
-          verification_status: 'verified',
+          payment_status: 'captured' as const,
+          verification_status: 'verified' as const,
           amount_paise: order.expected_amount_paise,
-          currency: 'INR',
+          currency: 'INR' as const,
           gateway_reference: `WEBHOOK_${eventId}`,
           verified_at: now,
           created_at: now,
-        });
-        store.db.purchases.unshift({
+        };
+        store.db.payment_transactions.unshift(transaction);
+
+        const entitlement = {
           id: `ent-${crypto.randomUUID()}`,
           user_id: order.user_id,
           package_id: order.package_id,
           subject_id: order.subject_id,
           payment_transaction_id: txnId,
-          entitlement_status: 'active',
+          entitlement_status: 'active' as const,
+          original_amount_paise: order.original_amount_paise ?? order.expected_amount_paise,
+          discount_amount_paise: order.discount_amount_paise ?? 0,
+          final_amount_paise: order.final_amount_paise ?? order.expected_amount_paise,
+          promo_code: order.promo_code || null,
+          promo_type: order.promo_type || null,
+          agent_id: order.agent_id || null,
+          referrer_user_id: order.referrer_user_id || null,
+          reward_status: order.reward_status || 'none',
           purchased_at: now,
           created_at: now,
           updated_at: now,
-        });
+        };
+        store.db.purchases.unshift(entitlement);
+
+        store.processVerifiedPurchaseAttributionAndRewards(order, transaction, entitlement);
       }
     }
 
@@ -1381,9 +1903,11 @@ async function startServer() {
         const category = store.db.categories.find((c) => c.slug === a.category_slug);
         const attemptedQuestions = a.correct_count + a.incorrect_count;
         const accuracy =
-          attemptedQuestions > 0 ? Math.round((a.correct_count / attemptedQuestions) * 1000) / 10 : 0;
+          attemptedQuestions > 0
+            ? Math.round((a.correct_count / attemptedQuestions) * 10000) / 100
+            : 0;
         const percentage =
-          a.maximum_marks > 0 ? Math.round((a.total_score / a.maximum_marks) * 1000) / 10 : 0;
+          a.maximum_marks > 0 ? Math.round((a.total_score / a.maximum_marks) * 10000) / 100 : 0;
 
         return {
           ...a,
@@ -1480,10 +2004,12 @@ async function startServer() {
 
     const attemptedCount = attempt.correct_count + attempt.incorrect_count;
     const accuracy =
-      attemptedCount > 0 ? Math.round((attempt.correct_count / attemptedCount) * 1000) / 10 : 0;
+      attemptedCount > 0
+        ? Math.round((attempt.correct_count / attemptedCount) * 10000) / 100
+        : 0;
     const percentage =
       attempt.maximum_marks > 0
-        ? Math.round((attempt.total_score / attempt.maximum_marks) * 1000) / 10
+        ? Math.round((attempt.total_score / attempt.maximum_marks) * 10000) / 100
         : 0;
 
     res.json({
@@ -1813,6 +2339,60 @@ async function startServer() {
     );
 
     res.json({ test });
+  });
+
+  app.delete('/api/v1/admin/tests/:id', requireAdmin, (req: AuthRequest, res) => {
+    const testIdx = store.db.tests.findIndex((t) => t.id === req.params.id);
+    if (testIdx === -1) {
+      res.status(404).json({ error: 'Test not found.' });
+      return;
+    }
+
+    const test = store.db.tests[testIdx];
+    const isGlobalFree =
+      store.db.free_test_config.free_sectional_test_id === test.id ||
+      store.db.free_test_config.free_pyq_test_id === test.id;
+
+    if (isGlobalFree) {
+      res.status(400).json({
+        error:
+          'Cannot delete or archive a test currently designated as a Global Free Test. Reassign the Free Test configuration first.',
+      });
+      return;
+    }
+
+    const attemptsCount = store.db.attempts.filter((a) => a.test_id === test.id).length;
+    if (attemptsCount > 0) {
+      test.publication_status = 'unpublished';
+      test.updated_at = new Date().toISOString();
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'TEST_ARCHIVED',
+        'test',
+        test.id,
+        `Unpublished test "${test.title}" instead of deleting because ${attemptsCount} student attempts exist`
+      );
+      res.json({
+        deleted: false,
+        archived: true,
+        test,
+        message: `Test had ${attemptsCount} existing student attempt(s), so it was safely unpublished instead of deleted.`,
+      });
+      return;
+    }
+
+    store.db.questions = store.db.questions.filter((q) => q.test_id !== test.id);
+    store.db.tests.splice(testIdx, 1);
+    store.logAudit(
+      req.userProfile!.id,
+      req.userProfile!.email,
+      'TEST_DELETED',
+      'test',
+      test.id,
+      `Deleted test "${test.title}" (${test.id})`
+    );
+    res.json({ deleted: true, archived: false });
   });
 
   // 11.4 Question Bank Management
@@ -2293,12 +2873,13 @@ async function startServer() {
   // 11.8 Students, Purchases & Payments Management
   app.get('/api/v1/admin/students', requireAdmin, (_req, res) => {
     const users = store.db.users.map((u) => {
+      const sanitized = store.sanitizeUser(u);
       const purchases = store.db.purchases.filter(
         (p) => p.user_id === u.id && p.entitlement_status === 'active'
       );
       const attempts = store.db.attempts.filter((a) => a.user_id === u.id);
       return {
-        ...u,
+        ...sanitized,
         entitlements_count: purchases.length,
         purchased_subjects: purchases.map((p) => {
           const s = store.db.subjects.find((sub) => sub.id === p.subject_id);
@@ -2311,6 +2892,49 @@ async function startServer() {
     res.json({
       students: paginated.items,
       pagination: paginated.pagination,
+    });
+  });
+
+  app.get('/api/v1/admin/students/:id/attempts', requireAdmin, (req, res) => {
+    const targetUser = store.db.users.find((u) => u.id === req.params.id);
+    if (!targetUser) {
+      res.status(404).json({ error: 'Student not found.' });
+      return;
+    }
+
+    const attempts = store.db.attempts
+      .filter((a) => a.user_id === targetUser.id)
+      .map((a) => {
+        const test = store.db.tests.find((t) => t.id === a.test_id);
+        const subj = store.db.subjects.find((s) => s.id === a.subject_id);
+        return {
+          ...a,
+          test_title: test?.title || 'Test',
+          subject_name: subj?.name || '',
+        };
+      })
+      .sort(
+        (a, b) =>
+          new Date(b.submitted_at || b.started_at).getTime() -
+          new Date(a.submitted_at || a.started_at).getTime()
+      );
+
+    const purchases = store.db.purchases
+      .filter((p) => p.user_id === targetUser.id)
+      .map((p) => {
+        const subj = store.db.subjects.find((s) => s.id === p.subject_id);
+        const pkg = store.db.packages.find((pk) => pk.id === p.package_id);
+        return {
+          ...p,
+          subject_name: subj?.name || '',
+          package_name: pkg?.package_name || '',
+        };
+      });
+
+    res.json({
+      student: store.sanitizeUser(targetUser),
+      attempts,
+      purchases,
     });
   });
 
@@ -2330,6 +2954,17 @@ async function startServer() {
       return;
     }
 
+    const adminConfig = getOfficialAdminConfig();
+    if (
+      targetUser.email.toLowerCase() === adminConfig.adminEmail &&
+      parsed.data.account_status === 'suspended'
+    ) {
+      res.status(400).json({
+        error: 'The primary platform administrator account cannot be suspended.',
+      });
+      return;
+    }
+
     targetUser.account_status = parsed.data.account_status;
     targetUser.updated_at = new Date().toISOString();
     store.logAudit(
@@ -2341,7 +2976,7 @@ async function startServer() {
       `Set account status for ${targetUser.email} to ${targetUser.account_status}`
     );
 
-    res.json({ user: targetUser });
+    res.json({ user: store.sanitizeUser(targetUser) });
   });
 
   app.get('/api/v1/admin/purchases', requireAdmin, (req, res) => {
@@ -2419,6 +3054,12 @@ async function startServer() {
       if (existing) {
         existing.entitlement_status = 'revoked';
         existing.updated_at = now;
+        store.reversePurchaseRewardsOnRevokeOrRefund(
+          existing,
+          req.userProfile!.id,
+          req.userProfile!.email,
+          reason.trim()
+        );
       }
     }
 
@@ -2432,6 +3073,660 @@ async function startServer() {
     );
 
     res.json({ status: 'ok' });
+  });
+
+  // ============================================================================
+  // 7B. ADMIN MARKETING, SALES AGENTS, PROMO CODES & REFERRALS MANAGEMENT
+  // ============================================================================
+  const buildAgentPerformance = (agent: any, filters?: {
+    subject_id?: string;
+    status?: string;
+    from_date?: string;
+    to_date?: string;
+  }) => {
+    const codeUpper = agent.promo_code.toUpperCase();
+    let agentOrders = store.db.payment_orders.filter(
+      (o) =>
+        o.agent_id === agent.id ||
+        (o.promo_code && o.promo_code.toUpperCase() === codeUpper)
+    );
+
+    if (filters?.subject_id) {
+      agentOrders = agentOrders.filter((o) => o.subject_id === filters.subject_id);
+    }
+    if (filters?.from_date) {
+      const fromMs = new Date(filters.from_date).getTime();
+      if (!isNaN(fromMs)) {
+        agentOrders = agentOrders.filter((o) => new Date(o.created_at).getTime() >= fromMs);
+      }
+    }
+    if (filters?.to_date) {
+      const toMs = new Date(filters.to_date).getTime() + 86_400_000;
+      if (!isNaN(toMs)) {
+        agentOrders = agentOrders.filter((o) => new Date(o.created_at).getTime() <= toMs);
+      }
+    }
+
+    const studentsWhoUsedCode = new Set(agentOrders.map((o) => o.user_id)).size;
+
+    // Only verified, captured payments count as completed sales
+    const paidOrders = agentOrders.filter((o) => {
+      if (o.status !== 'paid') return false;
+      if (o.reward_status === 'reversed') return false;
+      const verifiedTxn = store.db.payment_transactions.find(
+        (t) =>
+          t.order_id === o.id &&
+          t.payment_status === 'captured' &&
+          t.verification_status === 'verified'
+      );
+      return Boolean(verifiedTxn);
+    });
+
+    const pendingOrders = agentOrders.filter((o) => o.status === 'pending' || o.status === 'created');
+    const failedOrders = agentOrders.filter((o) => o.status === 'failed');
+
+    const totalRevenuePaise = paidOrders.reduce(
+      (sum, o) => sum + (o.final_amount_paise ?? o.expected_amount_paise),
+      0
+    );
+    const totalOriginalValuePaise = paidOrders.reduce(
+      (sum, o) => sum + (o.original_amount_paise ?? o.expected_amount_paise),
+      0
+    );
+    const totalDiscountPaise = paidOrders.reduce(
+      (sum, o) => sum + (o.discount_amount_paise ?? 0),
+      0
+    );
+
+    const salesHistory = agentOrders.map((o) => {
+      const student = store.db.users.find((u) => u.id === o.user_id);
+      const subj = store.db.subjects.find((s) => s.id === o.subject_id);
+      const txn = store.db.payment_transactions.find((t) => t.order_id === o.id);
+      const entry = {
+        id: o.id,
+        order_id: o.id,
+        gateway_order_id: o.gateway_order_id,
+        student_name: student?.full_name || 'Student',
+        student_email: student?.email || '',
+        subject_id: o.subject_id,
+        subject_name: subj?.name || '',
+        promo_code: o.promo_code,
+        original_amount_paise: o.original_amount_paise ?? o.expected_amount_paise,
+        discount_amount_paise: o.discount_amount_paise ?? 0,
+        final_amount_paise: o.final_amount_paise ?? o.expected_amount_paise,
+        status: o.status,
+        order_status: o.status,
+        payment_status: txn?.payment_status || (o.status === 'paid' ? 'captured' : o.status),
+        reward_status: o.reward_status || 'none',
+        created_at: o.created_at,
+      };
+      return entry;
+    });
+
+    const convRate =
+      agentOrders.length > 0
+        ? Math.round((paidOrders.length / agentOrders.length) * 1000) / 10
+        : 0;
+
+    return {
+      ...agent,
+      students_count: studentsWhoUsedCode,
+      total_applications: agentOrders.length,
+      successful_purchases: paidOrders.length,
+      pending_purchases: pendingOrders.length,
+      failed_purchases: failedOrders.length,
+      total_sales_value_paise: totalRevenuePaise,
+      total_original_value_paise: totalOriginalValuePaise,
+      total_discount_paise: totalDiscountPaise,
+      conversion_rate: convRate,
+      stats: {
+        students_used_count: studentsWhoUsedCode,
+        successful_purchases_count: paidOrders.length,
+        pending_purchases_count: pendingOrders.length,
+        failed_purchases_count: failedOrders.length,
+        total_sales_paise: totalRevenuePaise,
+        total_discount_paise: totalDiscountPaise,
+        conversion_rate_percent: convRate,
+      },
+      sales_history: salesHistory,
+      recent_orders: salesHistory,
+    };
+  };
+
+  // A. Sales Agents List & Performance
+  app.get('/api/v1/admin/marketing/agents', requireAdmin, (req, res) => {
+    const filters = {
+      subject_id: req.query.subject_id as string | undefined,
+      status: req.query.status as string | undefined,
+      from_date: req.query.from_date as string | undefined,
+      to_date: req.query.to_date as string | undefined,
+    };
+    let agents = (store.db.sales_agents || []).map((a) => buildAgentPerformance(a, filters));
+    if (filters.status) {
+      agents = agents.filter((a) => a.status === filters.status);
+    }
+    res.json({ agents });
+  });
+
+  // Create Sales Agent + corresponding Promo Code
+  app.post(
+    '/api/v1/admin/marketing/agents',
+    requireAdmin,
+    validateBody(
+      z.object({
+        name: z.string().min(2).max(120),
+        email: z.string().email(),
+        phone: z.string().max(30).optional().default(''),
+        promo_code: z.string().min(3).max(32),
+        discount_percent: z.number().int().min(1).max(90).optional().default(10),
+        status: z.enum(['active', 'inactive', 'suspended']).optional().default('active'),
+        notes: z.string().max(500).optional().default(''),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const d = req.body;
+      const codeUpper = d.promo_code
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9_-]/g, '');
+
+      if (codeUpper.length < 3) {
+        res.status(400).json({ error: 'Promo code must contain at least 3 alphanumeric characters.' });
+        return;
+      }
+
+      // Check uniqueness across sales_agents, promo_codes, and user referral codes
+      const duplicateAgent = store.db.sales_agents.find(
+        (a) =>
+          a.promo_code.toUpperCase() === codeUpper ||
+          a.email.toLowerCase() === d.email.toLowerCase().trim()
+      );
+      if (duplicateAgent) {
+        res.status(409).json({
+          error: 'A sales agent with this email or promo code already exists.',
+        });
+        return;
+      }
+
+      const duplicateUserRef = store.db.users.find(
+        (u) => u.referral_code && u.referral_code.toUpperCase() === codeUpper
+      );
+      if (duplicateUserRef) {
+        res.status(409).json({
+          error: 'This code conflicts with an existing student referral code. Choose a unique code.',
+        });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const newAgent = {
+        id: `agt-${crypto.randomUUID()}`,
+        name: d.name.trim(),
+        email: d.email.toLowerCase().trim(),
+        phone: (d.phone || '').trim(),
+        promo_code: codeUpper,
+        discount_percent: d.discount_percent ?? 10,
+        status: d.status as 'active' | 'inactive' | 'suspended',
+        notes: (d.notes || '').trim(),
+        created_at: now,
+        updated_at: now,
+      };
+
+      store.db.sales_agents.unshift(newAgent);
+
+      // Sync corresponding record in promo_codes
+      const existingPromo = store.db.promo_codes.find(
+        (p) => p.code.toUpperCase() === codeUpper
+      );
+      if (existingPromo) {
+        existingPromo.code_type = 'agent';
+        existingPromo.agent_id = newAgent.id;
+        existingPromo.discount_percent = newAgent.discount_percent;
+        existingPromo.is_active = newAgent.status === 'active';
+        existingPromo.updated_at = now;
+      } else {
+        store.db.promo_codes.unshift({
+          id: `prm-${crypto.randomUUID()}`,
+          code: codeUpper,
+          code_type: 'agent',
+          agent_id: newAgent.id,
+          description: `Sales Agent promo code for ${newAgent.name}`,
+          discount_percent: newAgent.discount_percent,
+          min_purchase_paise: 0,
+          max_uses: null,
+          current_uses: 0,
+          applicable_subject_ids: [],
+          starts_at: null,
+          expires_at: null,
+          is_active: newAgent.status === 'active',
+          created_at: now,
+          updated_at: now,
+        });
+      }
+
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'SALES_AGENT_CREATED',
+        'sales_agent',
+        newAgent.id,
+        `Created Sales Agent ${newAgent.name} (${newAgent.email}) with promo code ${newAgent.promo_code} (${newAgent.discount_percent}% discount)`
+      );
+
+      res.status(201).json({ agent: buildAgentPerformance(newAgent) });
+    }
+  );
+
+  // Update Sales Agent (details, promo code, discount %, or status)
+  app.put(
+    '/api/v1/admin/marketing/agents/:id',
+    requireAdmin,
+    validateBody(
+      z.object({
+        name: z.string().min(2).max(120).optional(),
+        email: z.string().email().optional(),
+        phone: z.string().max(30).optional(),
+        promo_code: z.string().min(3).max(32).optional(),
+        discount_percent: z.number().int().min(1).max(90).optional(),
+        status: z.enum(['active', 'inactive', 'suspended']).optional(),
+        notes: z.string().max(500).optional(),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const agent = store.db.sales_agents.find((a) => a.id === req.params.id);
+      if (!agent) {
+        res.status(404).json({ error: 'Sales agent not found.' });
+        return;
+      }
+
+      const d = req.body;
+      const oldCode = agent.promo_code;
+
+      if (d.promo_code) {
+        const nextCode = d.promo_code
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z0-9_-]/g, '');
+        const conflict = store.db.sales_agents.find(
+          (a) => a.id !== agent.id && a.promo_code.toUpperCase() === nextCode
+        );
+        if (conflict) {
+          res.status(409).json({ error: 'Another sales agent already uses this promo code.' });
+          return;
+        }
+        agent.promo_code = nextCode;
+      }
+
+      if (d.name !== undefined) agent.name = d.name.trim();
+      if (d.email !== undefined) agent.email = d.email.toLowerCase().trim();
+      if (d.phone !== undefined) agent.phone = d.phone.trim();
+      if (d.discount_percent !== undefined) agent.discount_percent = d.discount_percent;
+      if (d.status !== undefined) agent.status = d.status;
+      if (d.notes !== undefined) agent.notes = d.notes.trim();
+      agent.updated_at = new Date().toISOString();
+
+      // Sync linked promo_code record
+      const linkedPromo = store.db.promo_codes.find(
+        (p) => p.agent_id === agent.id || p.code.toUpperCase() === oldCode.toUpperCase()
+      );
+      if (linkedPromo) {
+        linkedPromo.code = agent.promo_code;
+        linkedPromo.discount_percent = agent.discount_percent;
+        linkedPromo.is_active = agent.status === 'active';
+        linkedPromo.updated_at = agent.updated_at;
+      }
+
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'SALES_AGENT_UPDATED',
+        'sales_agent',
+        agent.id,
+        `Updated Sales Agent ${agent.name} (code=${agent.promo_code}, status=${agent.status}, discount=${agent.discount_percent}%)`
+      );
+
+      res.json({ agent: buildAgentPerformance(agent) });
+    }
+  );
+
+  // B. Student Referrals List & Filter
+  app.get('/api/v1/admin/marketing/referrals', requireAdmin, (req, res) => {
+    const statusFilter = (req.query.status as string | undefined)?.trim();
+    const search = ((req.query.search as string | undefined) || '').trim().toLowerCase();
+
+    let list = (store.db.referral_attributions || []).map((ra) => {
+      const referrer = store.db.users.find((u) => u.id === ra.referrer_user_id);
+      const referred = store.db.users.find((u) => u.id === ra.referred_user_id);
+      const subj = ra.subject_id
+        ? store.db.subjects.find((s) => s.id === ra.subject_id)
+        : null;
+      return {
+        ...ra,
+        referrer_name: referrer?.full_name || 'Student',
+        referrer_email: referrer?.email || '',
+        referred_name: referred?.full_name || 'Student',
+        referred_email: referred?.email || '',
+        subject_name: subj?.name || null,
+      };
+    });
+
+    if (statusFilter) {
+      list = list.filter((item) => item.status === statusFilter);
+    }
+    if (search) {
+      list = list.filter(
+        (item) =>
+          item.referrer_name.toLowerCase().includes(search) ||
+          item.referrer_email.toLowerCase().includes(search) ||
+          item.referred_name.toLowerCase().includes(search) ||
+          item.referred_email.toLowerCase().includes(search) ||
+          item.referral_code.toLowerCase().includes(search)
+      );
+    }
+
+    res.json({
+      referrals: list,
+      wallet_transactions: (store.db.wallet_transactions || []).slice(0, 200).map((wt) => {
+        const u = store.db.users.find((usr) => usr.id === wt.user_id);
+        return {
+          ...wt,
+          user_name: u?.full_name || 'Student',
+          user_email: u?.email || '',
+        };
+      }),
+    });
+  });
+
+  // C. Promo Codes Management
+  app.get('/api/v1/admin/marketing/promo-codes', requireAdmin, (_req, res) => {
+    const promoCodes = (store.db.promo_codes || []).map((pc) => {
+      const agent = pc.agent_id
+        ? store.db.sales_agents.find((a) => a.id === pc.agent_id)
+        : null;
+      const codeOrders = store.db.payment_orders.filter(
+        (o) => o.promo_code && o.promo_code.toUpperCase() === pc.code.toUpperCase()
+      );
+      const paidOrders = codeOrders.filter(
+        (o) => o.status === 'paid' && o.reward_status !== 'reversed'
+      );
+      const revenuePaise = paidOrders.reduce(
+        (sum, o) => sum + (o.final_amount_paise ?? o.expected_amount_paise),
+        0
+      );
+      const discountGivenPaise = paidOrders.reduce(
+        (sum, o) => sum + (o.discount_amount_paise ?? 0),
+        0
+      );
+
+      return {
+        ...pc,
+        agent_name: agent?.name || null,
+        total_applications: codeOrders.length,
+        successful_purchases: paidOrders.length,
+        revenue_paise: revenuePaise,
+        discount_given_paise: discountGivenPaise,
+      };
+    });
+
+    res.json({ promo_codes: promoCodes });
+  });
+
+  app.post(
+    '/api/v1/admin/marketing/promo-codes',
+    requireAdmin,
+    validateBody(
+      z.object({
+        code: z.string().min(3).max(32),
+        code_type: z.enum(['agent', 'campaign']).default('campaign'),
+        agent_id: z.string().nullable().optional(),
+        description: z.string().max(300).optional().default(''),
+        discount_percent: z.number().int().min(1).max(90).default(10),
+        min_purchase_paise: z.number().int().min(0).optional().default(0),
+        max_uses: z.number().int().min(1).nullable().optional().default(null),
+        applicable_subject_ids: z.array(z.string()).optional().default([]),
+        starts_at: z.string().nullable().optional().default(null),
+        expires_at: z.string().nullable().optional().default(null),
+        is_active: z.boolean().optional().default(true),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const d = req.body;
+      const codeUpper = d.code
+        .trim()
+        .toUpperCase()
+        .replace(/[^A-Z0-9_-]/g, '');
+
+      const exists = store.db.promo_codes.find(
+        (p) => p.code.toUpperCase() === codeUpper
+      );
+      if (exists) {
+        res.status(409).json({ error: 'A promo code with this code string already exists.' });
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const created = {
+        id: `prm-${crypto.randomUUID()}`,
+        code: codeUpper,
+        code_type: d.code_type as 'agent' | 'campaign',
+        agent_id: d.agent_id || null,
+        description: (d.description || '').trim(),
+        discount_percent: d.discount_percent,
+        min_purchase_paise: d.min_purchase_paise ?? 0,
+        max_uses: d.max_uses ?? null,
+        current_uses: 0,
+        applicable_subject_ids: d.applicable_subject_ids || [],
+        starts_at: d.starts_at || null,
+        expires_at: d.expires_at || null,
+        is_active: d.is_active ?? true,
+        created_at: now,
+        updated_at: now,
+      };
+
+      store.db.promo_codes.unshift(created);
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'PROMO_CODE_CREATED',
+        'promo_code',
+        created.id,
+        `Created promo code ${created.code} (${created.discount_percent}% discount)`
+      );
+
+      res.status(201).json({ promo_code: created });
+    }
+  );
+
+  app.put(
+    '/api/v1/admin/marketing/promo-codes/:id',
+    requireAdmin,
+    validateBody(
+      z.object({
+        description: z.string().max(300).optional(),
+        discount_percent: z.number().int().min(1).max(90).optional(),
+        min_purchase_paise: z.number().int().min(0).optional(),
+        max_uses: z.number().int().min(1).nullable().optional(),
+        applicable_subject_ids: z.array(z.string()).optional(),
+        starts_at: z.string().nullable().optional(),
+        expires_at: z.string().nullable().optional(),
+        is_active: z.boolean().optional(),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const promo = store.db.promo_codes.find((p) => p.id === req.params.id);
+      if (!promo) {
+        res.status(404).json({ error: 'Promo code not found.' });
+        return;
+      }
+
+      const d = req.body;
+      if (d.description !== undefined) promo.description = d.description.trim();
+      if (d.discount_percent !== undefined) promo.discount_percent = d.discount_percent;
+      if (d.min_purchase_paise !== undefined) promo.min_purchase_paise = d.min_purchase_paise;
+      if (d.max_uses !== undefined) promo.max_uses = d.max_uses;
+      if (d.applicable_subject_ids !== undefined) {
+        promo.applicable_subject_ids = d.applicable_subject_ids;
+      }
+      if (d.starts_at !== undefined) promo.starts_at = d.starts_at;
+      if (d.expires_at !== undefined) promo.expires_at = d.expires_at;
+      if (d.is_active !== undefined) promo.is_active = d.is_active;
+      promo.updated_at = new Date().toISOString();
+
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'PROMO_CODE_UPDATED',
+        'promo_code',
+        promo.id,
+        `Updated promo code ${promo.code} (active=${promo.is_active}, discount=${promo.discount_percent}%)`
+      );
+
+      res.json({ promo_code: promo });
+    }
+  );
+
+  // D. Referral Settings Management
+  app.get('/api/v1/admin/marketing/referral-settings', requireAdmin, (_req, res) => {
+    res.json({
+      settings: store.db.referral_settings,
+      referral_settings: store.db.referral_settings,
+    });
+  });
+
+  app.put(
+    '/api/v1/admin/marketing/referral-settings',
+    requireAdmin,
+    validateBody(
+      z.object({
+        is_enabled: z.boolean(),
+        friend_discount_percent: z.number().int().min(1).max(90),
+        referrer_reward_percent: z.number().int().min(1).max(90),
+        min_purchase_paise: z.number().int().min(0),
+        reward_expiry_days: z.number().int().min(1).nullable().optional().default(null),
+      })
+    ),
+    (req: AuthRequest, res) => {
+      const d = req.body;
+      store.db.referral_settings = {
+        is_enabled: d.is_enabled,
+        friend_discount_percent: d.friend_discount_percent,
+        referrer_reward_percent: d.referrer_reward_percent,
+        min_purchase_paise: d.min_purchase_paise,
+        reward_expiry_days: d.reward_expiry_days ?? null,
+        updated_at: new Date().toISOString(),
+        updated_by: req.userProfile!.email,
+      };
+
+      store.logAudit(
+        req.userProfile!.id,
+        req.userProfile!.email,
+        'REFERRAL_SETTINGS_UPDATED',
+        'referral_settings',
+        'singleton',
+        `Updated referral settings: enabled=${d.is_enabled}, friend_discount=${d.friend_discount_percent}%, referrer_reward=${d.referrer_reward_percent}%`
+      );
+
+      res.json({
+        settings: store.db.referral_settings,
+        referral_settings: store.db.referral_settings,
+      });
+    }
+  );
+
+  // E. Marketing Analytics Overview (Supports filtering by agent, promo code, subject, date range, status)
+  app.get('/api/v1/admin/marketing/overview', requireAdmin, (req, res) => {
+    const agentIdFilter = (req.query.agent_id as string | undefined)?.trim();
+    const codeFilter = (req.query.promo_code as string | undefined)?.trim().toUpperCase();
+    const subjectIdFilter = (req.query.subject_id as string | undefined)?.trim();
+    const statusFilter = (req.query.status as string | undefined)?.trim();
+    const fromDate = (req.query.from_date as string | undefined)?.trim();
+    const toDate = (req.query.to_date as string | undefined)?.trim();
+
+    let orders = [...store.db.payment_orders];
+    let attributions = [...(store.db.referral_attributions || [])];
+
+    if (agentIdFilter) {
+      orders = orders.filter((o) => o.agent_id === agentIdFilter);
+    }
+    if (codeFilter) {
+      orders = orders.filter(
+        (o) => o.promo_code && o.promo_code.toUpperCase() === codeFilter
+      );
+      attributions = attributions.filter(
+        (ra) => ra.referral_code.toUpperCase() === codeFilter
+      );
+    }
+    if (subjectIdFilter) {
+      orders = orders.filter((o) => o.subject_id === subjectIdFilter);
+      attributions = attributions.filter((ra) => ra.subject_id === subjectIdFilter);
+    }
+    if (statusFilter) {
+      orders = orders.filter((o) => o.status === statusFilter);
+    }
+    if (fromDate) {
+      const fromMs = new Date(fromDate).getTime();
+      if (!isNaN(fromMs)) {
+        orders = orders.filter((o) => new Date(o.created_at).getTime() >= fromMs);
+        attributions = attributions.filter((ra) => new Date(ra.created_at).getTime() >= fromMs);
+      }
+    }
+    if (toDate) {
+      const toMs = new Date(toDate).getTime() + 86_400_000;
+      if (!isNaN(toMs)) {
+        orders = orders.filter((o) => new Date(o.created_at).getTime() <= toMs);
+        attributions = attributions.filter((ra) => new Date(ra.created_at).getTime() <= toMs);
+      }
+    }
+
+    const activeSalesAgents = (store.db.sales_agents || []).filter(
+      (a) => a.status === 'active'
+    ).length;
+
+    const promoOrders = orders.filter(
+      (o) => o.promo_code && (o.promo_type === 'agent' || o.promo_type === 'campaign')
+    );
+    const successfulAgentPurchases = promoOrders.filter(
+      (o) => o.status === 'paid' && o.reward_status !== 'reversed'
+    );
+    const totalAgentRevenuePaise = successfulAgentPurchases.reduce(
+      (sum, o) => sum + (o.final_amount_paise ?? o.expected_amount_paise),
+      0
+    );
+
+    const rewardedReferrals = attributions.filter((ra) => ra.status === 'rewarded');
+    const totalReferralRewardsIssuedPaise = rewardedReferrals.reduce(
+      (sum, ra) => sum + (ra.referrer_reward_paise || 0),
+      0
+    );
+
+    const allPaidDiscountOrders = orders.filter(
+      (o) => o.status === 'paid' && o.reward_status !== 'reversed' && (o.discount_amount_paise || 0) > 0
+    );
+    const totalDiscountsGrantedPaise = allPaidDiscountOrders.reduce(
+      (sum, o) => sum + (o.discount_amount_paise || 0),
+      0
+    );
+
+    const referralConversionRate =
+      attributions.length > 0
+        ? Math.round((rewardedReferrals.length / attributions.length) * 1000) / 10
+        : 0;
+
+    res.json({
+      metrics: {
+        total_active_sales_agents: activeSalesAgents,
+        total_sales_agents: (store.db.sales_agents || []).length,
+        total_promo_code_applications: promoOrders.length,
+        total_successful_agent_purchases: successfulAgentPurchases.length,
+        total_agent_generated_revenue_paise: totalAgentRevenuePaise,
+        total_student_referrals: attributions.length,
+        total_successful_referral_purchases: rewardedReferrals.length,
+        total_referral_rewards_issued_paise: totalReferralRewardsIssuedPaise,
+        total_discounts_granted_paise: totalDiscountsGrantedPaise,
+        referral_conversion_rate: referralConversionRate,
+        referral_conversion_rate_percent: referralConversionRate,
+      },
+    });
   });
 
   app.get('/api/v1/admin/payments', requireAdmin, (req, res) => {
@@ -2465,6 +3760,37 @@ async function startServer() {
       audit_logs: paginated.items,
       pagination: paginated.pagination,
       webhook_events: store.db.webhook_events.slice(0, 50),
+    });
+  });
+
+  app.get('/api/v1/admin/settings', requireAdmin, (_req, res) => {
+    const adminConfig = getOfficialAdminConfig();
+    const adminUser = store.ensureOfficialAdminAccount();
+    const pgPool = getPostgresPool();
+    const hasCustomRazorpayKeys = Boolean(
+      cleanEnvVal(process.env.RAZORPAY_KEY_ID) && cleanEnvVal(process.env.RAZORPAY_KEY_SECRET)
+    );
+
+    res.json({
+      official_admin: {
+        id: adminUser.id,
+        full_name: adminUser.full_name,
+        email: adminUser.email,
+        role: adminUser.role,
+        account_status: adminUser.account_status,
+        password_initialized: Boolean(adminUser.password_hash),
+        must_change_password: Boolean(adminUser.must_change_password),
+      },
+      platform_config: {
+        environment: process.env.NODE_ENV || 'development',
+        postgres_connected: Boolean(pgPool),
+        payment_gateway: 'razorpay',
+        payment_mode: RAZORPAY_KEY_ID.startsWith('rzp_live_') ? 'live' : 'test',
+        razorpay_configured: hasCustomRazorpayKeys,
+        bootstrap_secret_configured: Boolean(adminConfig.setupSecret),
+        free_sectional_test_id: store.db.free_test_config.free_sectional_test_id,
+        free_pyq_test_id: store.db.free_test_config.free_pyq_test_id,
+      },
     });
   });
 
@@ -2636,21 +3962,24 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
     logger.info(`PrimePrep CUET PG Server running on http://0.0.0.0:${PORT}`);
-    // Automatically run non-destructive PostgreSQL migrations & initial catalogue sync on boot
-    runPostgresMigrations()
-      .then(async (res) => {
-        if (res.connected) {
-          logger.info(res.message, { appliedMigrations: res.appliedMigrations });
-          await syncDatabaseToPostgres(store.db, { includeFullCatalogue: true });
-          logger.info('Supabase PostgreSQL catalogue & state synchronized.');
-        }
-      })
-      .catch((err) => {
-        logger.error('PostgreSQL startup migration/sync error', {
-          error: sanitizeDbErrorMessage(err?.message),
+    // Run non-destructive PostgreSQL migrations & sync in background after server is ready
+    setTimeout(() => {
+      runPostgresMigrations()
+        .then(async (res) => {
+          if (res.connected) {
+            logger.info(res.message, { appliedMigrations: res.appliedMigrations });
+            await syncDatabaseToPostgres(store.db, { includeFullCatalogue: true });
+            logger.info('Supabase PostgreSQL catalogue & state synchronized.');
+          }
+        })
+        .catch((err) => {
+          logger.error('PostgreSQL startup migration/sync error', {
+            error: sanitizeDbErrorMessage(err?.message),
+          });
         });
-      });
+    }, 500);
   });
 }
 

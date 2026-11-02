@@ -1,14 +1,13 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.tsx';
-import { LogOut, Shield, UserCheck, ChevronDown } from 'lucide-react';
+import { LogOut, ChevronDown } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
-  const { profile, logout, switchRoleView } = useAuth();
+  const { profile, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [switchingRole, setSwitchingRole] = useState(false);
 
   // Hide standard top bar inside active full-screen examination hall
   if (location.pathname.startsWith('/exam/')) {
@@ -18,23 +17,6 @@ export const Navbar: React.FC = () => {
   const handleSignInClick = () => {
     if (location.pathname === '/login') return;
     navigate('/login');
-  };
-
-  const handleToggleRole = async () => {
-    if (!profile || switchingRole) return;
-    setSwitchingRole(true);
-    try {
-      const nextRole = profile.role === 'admin' ? 'student' : 'admin';
-      await switchRoleView(nextRole);
-      setMenuOpen(false);
-      if (nextRole === 'admin') {
-        navigate('/admin');
-      } else {
-        navigate('/dashboard');
-      }
-    } finally {
-      setSwitchingRole(false);
-    }
   };
 
   const isActive = (path: string) =>
@@ -137,8 +119,12 @@ export const Navbar: React.FC = () => {
                 className="flex items-center gap-2.5 px-3.5 py-2 text-sm font-medium text-slate-800 bg-slate-100 hover:bg-slate-200/80 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <span className="truncate max-w-[150px]">{profile.full_name}</span>
-                <span className="text-xs text-slate-500">·</span>
-                <span className="text-xs font-mono uppercase text-blue-700">{profile.role}</span>
+                {profile.role === 'admin' && (
+                  <>
+                    <span className="text-xs text-slate-500">·</span>
+                    <span className="text-xs font-mono uppercase text-blue-700">Admin</span>
+                  </>
+                )}
                 <ChevronDown className="w-4 h-4 text-slate-500" />
               </button>
 
@@ -187,6 +173,13 @@ export const Navbar: React.FC = () => {
                     >
                       My Purchases
                     </Link>
+                    <Link
+                      to="/change-password"
+                      onClick={() => setMenuOpen(false)}
+                      className="block px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      Change Password
+                    </Link>
                     {profile.role === 'admin' && (
                       <Link
                         to="/admin"
@@ -199,24 +192,6 @@ export const Navbar: React.FC = () => {
                   </div>
 
                   <div className="border-t border-slate-100 pt-1 mt-1">
-                    <button
-                      onClick={handleToggleRole}
-                      disabled={switchingRole}
-                      className="w-full flex items-center gap-2 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 text-left cursor-pointer"
-                    >
-                      {profile.role === 'admin' ? (
-                        <>
-                          <UserCheck className="w-4 h-4 text-slate-500" />
-                          <span>Switch to Student View</span>
-                        </>
-                      ) : (
-                        <>
-                          <Shield className="w-4 h-4 text-blue-700" />
-                          <span>Switch to Administrator View</span>
-                        </>
-                      )}
-                    </button>
-
                     <button
                       onClick={async () => {
                         setMenuOpen(false);

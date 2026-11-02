@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { apiRequest, formatDurationSeconds } from '../../api/client.ts';
 import {
@@ -7,8 +7,11 @@ import {
   XCircle,
   MinusCircle,
   Clock,
-  Award,
   Target,
+  BookOpen,
+  ListChecks,
+  LayoutDashboard,
+  FileBarChart,
 } from 'lucide-react';
 
 export const ResultDetailPage: React.FC = () => {
@@ -19,6 +22,7 @@ export const ResultDetailPage: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<
     'all' | 'correct' | 'incorrect' | 'unanswered'
   >('all');
+  const solutionsSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!attemptId) return;
@@ -31,6 +35,13 @@ export const ResultDetailPage: React.FC = () => {
       .catch((err) => setError(err.message || 'Failed to load examination result'))
       .finally(() => setLoading(false));
   }, [attemptId]);
+
+  const scrollToSolutions = (filter?: 'all' | 'correct' | 'incorrect' | 'unanswered') => {
+    if (filter) {
+      setFilterStatus(filter);
+    }
+    solutionsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   if (loading) {
     return (
@@ -56,6 +67,7 @@ export const ResultDetailPage: React.FC = () => {
   }
 
   const { attempt, test, subject, category, question_analysis } = data;
+  const formattedAccuracy = Number(attempt.accuracy ?? 0).toFixed(2);
   const filteredQuestions = (question_analysis || []).filter((q: any) => {
     if (filterStatus === 'all') return true;
     return q.status === filterStatus;
@@ -85,14 +97,14 @@ export const ResultDetailPage: React.FC = () => {
         </Link>
       </div>
 
-      {/* Scorecard Banner */}
+      {/* Scorecard Banner (Feature 5: Complete 11-metric summary + 4 Action Buttons) */}
       <div className="mt-4 bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="p-6 sm:p-8 bg-slate-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
             <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-blue-300">
-              <span>{subject?.name} ({subject?.paper_code})</span>
+              <span>Subject: {subject?.name} ({subject?.paper_code})</span>
               <span>·</span>
-              <span>{category?.name || attempt.category_slug}</span>
+              <span>Category: {category?.name || attempt.category_slug}</span>
               <span>·</span>
               <span>
                 {attempt.status === 'expired_submitted'
@@ -102,8 +114,8 @@ export const ResultDetailPage: React.FC = () => {
             </div>
 
             <h1 className="mt-2 text-2xl sm:text-3xl font-bold font-display">{test?.title}</h1>
-            <p className="mt-1 text-xs text-slate-400 font-mono">
-              Submitted on{' '}
+            <p className="mt-1.5 text-xs text-slate-300 font-mono">
+              Submission Time:{' '}
               {attempt.submitted_at
                 ? new Date(attempt.submitted_at).toLocaleString('en-IN')
                 : '—'}
@@ -111,13 +123,13 @@ export const ResultDetailPage: React.FC = () => {
           </div>
 
           <div className="p-5 rounded-xl bg-slate-800 border border-slate-700 text-right shrink-0">
-            <span className="text-xs text-slate-400 block">Final Evaluated Score</span>
+            <span className="text-xs text-slate-400 block">Total Score Obtained</span>
             <div className="mt-1 text-3xl font-extrabold font-mono text-white tabular-nums">
               {attempt.total_score}{' '}
               <span className="text-lg text-slate-400 font-normal">/ {attempt.maximum_marks}</span>
             </div>
             <span className="mt-1 text-xs font-mono text-blue-300 block tabular-nums">
-              {attempt.percentage}% Overall Score
+              Maximum Possible Score: {attempt.maximum_marks} ({attempt.percentage}%)
             </span>
           </div>
         </div>
@@ -147,7 +159,7 @@ export const ResultDetailPage: React.FC = () => {
           <div>
             <span className="text-slate-500 flex items-center gap-1.5">
               <MinusCircle className="w-3.5 h-3.5 text-slate-400" />
-              Unanswered
+              Unattempted Questions
             </span>
             <p className="mt-1.5 text-xl font-bold text-slate-700 font-mono tabular-nums">
               {attempt.unanswered_count}
@@ -157,10 +169,10 @@ export const ResultDetailPage: React.FC = () => {
           <div>
             <span className="text-slate-500 flex items-center gap-1.5">
               <Target className="w-3.5 h-3.5 text-blue-700" />
-              Accuracy Rate
+              Accuracy Percentage
             </span>
             <p className="mt-1.5 text-xl font-bold text-slate-900 font-mono tabular-nums">
-              {attempt.accuracy}%
+              {formattedAccuracy}%
             </p>
           </div>
 
@@ -174,10 +186,51 @@ export const ResultDetailPage: React.FC = () => {
             </p>
           </div>
         </div>
+
+        {/* Action Buttons Bar (Feature 5 Requirement) */}
+        <div className="px-6 py-4 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => scrollToSolutions('all')}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg cursor-pointer"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>View Solutions</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => scrollToSolutions('incorrect')}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+            >
+              <ListChecks className="w-3.5 h-3.5 text-slate-700" />
+              <span>Review Answers</span>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Link
+              to="/results"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg"
+            >
+              <FileBarChart className="w-3.5 h-3.5 text-blue-700" />
+              <span>View My Results</span>
+            </Link>
+
+            <Link
+              to="/dashboard"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg"
+            >
+              <LayoutDashboard className="w-3.5 h-3.5" />
+              <span>Return to Dashboard</span>
+            </Link>
+          </div>
+        </div>
       </div>
 
       {/* Question-Wise Analysis & Solutions */}
-      <div className="mt-10">
+      <div ref={solutionsSectionRef} className="mt-10">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4">
           <div>
             <h2 className="text-xl font-bold text-slate-900 font-display">

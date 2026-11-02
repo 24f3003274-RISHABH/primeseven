@@ -569,8 +569,413 @@ async function runProductionReadinessSuite() {
     assert.ok(!purchasePage.includes('RAZORPAY_WEBHOOK_SECRET'));
   });
 
+  // 21. Public registration of reserved admin email primeseven@gmail.com is blocked
+  await check(21, 'Public registration of reserved admin email (primeseven@gmail.com) is strictly blocked', async () => {
+    const regAdminRes = await api('/api/v1/auth/register', {
+      method: 'POST',
+      body: {
+        full_name: 'Impersonator',
+        email: 'primeseven@gmail.com',
+        password: 'ValidPassword123!',
+      },
+    });
+    assert.equal(regAdminRes.status, 403);
+  });
+
+  // 22. Student registration, login password verification, and password change flow
+  await check(22, 'Student registration, scrypt password verification, and password change flow work securely', async () => {
+    const testEmail = `candidate.${runId}@example.com`;
+    const initialPassword = 'InitialPassword123!';
+    const updatedPassword = 'UpdatedPassword456!';
+
+    const regRes = await api('/api/v1/auth/register', {
+      method: 'POST',
+      body: {
+        full_name: 'Test Candidate',
+        email: testEmail,
+        password: initialPassword,
+      },
+    });
+    assert.equal(regRes.status, 201);
+    assert.equal('password_hash' in regRes.data.user, false, 'password_hash must never be returned');
+
+    // Wrong password rejected
+    const badLogin = await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: {
+        email: testEmail,
+        password: 'WrongPassword999!',
+      },
+    });
+    assert.equal(badLogin.status, 401);
+
+    // Correct password succeeds
+    const goodLogin = await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: {
+        email: testEmail,
+        password: initialPassword,
+      },
+    });
+    assert.equal(goodLogin.status, 200);
+    const candidateJwt = goodLogin.data.token;
+
+    // Change password
+    const changeRes = await api('/api/v1/auth/change-password', {
+      method: 'POST',
+      token: candidateJwt,
+      body: {
+        current_password: initialPassword,
+        new_password: updatedPassword,
+      },
+    });
+    assert.equal(changeRes.status, 200);
+
+    // Old password now rejected
+    const oldLogin = await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: {
+        email: testEmail,
+        password: initialPassword,
+      },
+    });
+    assert.equal(oldLogin.status, 401);
+
+    // New password succeeds
+    const newLogin = await api('/api/v1/auth/login', {
+      method: 'POST',
+      body: {
+        email: testEmail,
+        password: updatedPassword,
+      },
+    });
+    assert.equal(newLogin.status, 200);
+  });
+
+  // 23. Student accounts cannot self-escalate to admin role
+  await check(23, 'Student accounts cannot self-escalate to admin role via /api/v1/auth/switch-role', async () => {
+    const switchRes = await api('/api/v1/auth/switch-role', {
+      method: 'POST',
+      token: studentBToken,
+      body: { target_role: 'admin' },
+    });
+    assert.equal(switchRes.status, 403);
+  });
+
+  // 24. Official Prime Seven admin profile is provisioned and verified in /api/v1/admin/settings
+  await check(24, 'Official Prime Seven (primeseven@gmail.com) admin account is provisioned and verified', async () => {
+    const settingsRes = await api('/api/v1/admin/settings', { token: adminToken });
+    assert.equal(settingsRes.status, 200);
+    assert.equal(settingsRes.data.official_admin.email, 'primeseven@gmail.com');
+    assert.equal(settingsRes.data.official_admin.full_name, 'Prime Seven');
+    assert.equal(settingsRes.data.official_admin.role, 'admin');
+  });
+
+  // 25. Sales Agent Promo Code System (creation, 10% discount, pending vs captured sales, status suspension)
+  await check(25, 'Sales Agent Promo Code System validates 10% discount, counts only captured sales, and blocks suspended agents', async () => {
+    const agentCode = `ADITYA${String(runId).slice(-4)}`;
+    const createAgentRes = await api('/api/v1/admin/marketing/agents', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        name: 'Aditya Kumar',
+        email: `aditya.${runId}@example.com`,
+        phone: '+919876543210',
+        promo_code: agentCode,
+        discount_percent: 10,
+        status: 'active',
+      },
+    });
+    assert.equal(createAgentRes.status, 201);
+    const agentId = createAgentRes.data.agent.id;
+
+    // Duplicate promo code rejected
+    const dupAgentRes = await api('/api/v1/admin/marketing/agents', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        name: 'Duplicate Agent',
+        email: `dup.${runId}@example.com`,
+        promo_code: agentCode,
+      },
+    });
+    assert.equal(dupAgentRes.status, 409);
+
+    // Student validates promo code on Economics package
+    const econRes = await api('/api/v1/subjects/economics');
+    const econPkg = econRes.data.package;
+    const studentAgentBuyer = createMockToken(
+      `agent-buyer-${runId}`,
+      `agent.buyer.${runId}@example.com`,
+      'Agent Buyer'
+    );
+
+    const valRes = await api('/api/v1/promo/validate', {
+      method: 'POST',
+      token: studentAgentBuyer,
+      body: {
+        code: agentCode,
+        package_id: econPkg.id,
+      },
+    });
+    assert.equal(valRes.status, 200);
+    assert.equal(valRes.data.valid, true);
+    assert.equal(valRes.data.message, 'Promo code applied successfully.');
+    const expectedDisc = Math.round((econPkg.price_paise * 10) / 100);
+    const expectedFinal = econPkg.price_paise - expectedDisc;
+    assert.equal(valRes.data.discount_amount_paise, expectedDisc);
+    assert.equal(valRes.data.final_amount_paise, expectedFinal);
+
+    // Create order with agent promo code
+    const ordRes = await api('/api/v1/payments/create-order', {
+      method: 'POST',
+      token: studentAgentBuyer,
+      body: {
+        package_id: econPkg.id,
+        promo_code: agentCode,
+      },
+    });
+    assert.equal(ordRes.status, 200);
+    assert.equal(ordRes.data.order.original_amount_paise, econPkg.price_paise);
+    assert.equal(ordRes.data.order.discount_amount_paise, expectedDisc);
+    assert.equal(ordRes.data.order.final_amount_paise, expectedFinal);
+
+    // Before payment capture: agent completed sales must be 0, pending must be 1
+    const beforeAgents = await api('/api/v1/admin/marketing/agents', { token: adminToken });
+    const beforeAgent = beforeAgents.data.agents.find((a: any) => a.id === agentId);
+    assert.equal(beforeAgent.stats.successful_purchases_count, 0);
+    assert.equal(beforeAgent.stats.pending_purchases_count, 1);
+
+    // Verify payment capture
+    const gwOrderId = ordRes.data.order.gateway_order_id;
+    const gwPayId = `pay_agent_${runId}`;
+    const validSig = crypto
+      .createHmac('sha256', RAZORPAY_SECRET)
+      .update(`${gwOrderId}|${gwPayId}`)
+      .digest('hex');
+
+    const verifyRes = await api('/api/v1/payments/verify', {
+      method: 'POST',
+      token: studentAgentBuyer,
+      body: {
+        razorpay_order_id: gwOrderId,
+        razorpay_payment_id: gwPayId,
+        razorpay_signature: validSig,
+        amount_paise: expectedFinal,
+      },
+    });
+    assert.equal(verifyRes.status, 200);
+    assert.equal(verifyRes.data.verified, true);
+
+    // After capture: agent completed sales = 1, revenue = expectedFinal, discount = expectedDisc
+    const afterAgents = await api('/api/v1/admin/marketing/agents', { token: adminToken });
+    const afterAgent = afterAgents.data.agents.find((a: any) => a.id === agentId);
+    assert.equal(afterAgent.stats.successful_purchases_count, 1);
+    assert.equal(afterAgent.stats.total_sales_paise, expectedFinal);
+    assert.equal(afterAgent.stats.total_discount_paise, expectedDisc);
+
+    // Suspend agent -> promo code must be rejected as inactive
+    await api(`/api/v1/admin/marketing/agents/${agentId}`, {
+      method: 'PUT',
+      token: adminToken,
+      body: { status: 'suspended' },
+    });
+
+    const suspendedVal = await api('/api/v1/promo/validate', {
+      method: 'POST',
+      token: studentBToken,
+      body: {
+        code: agentCode,
+        package_id: econPkg.id,
+      },
+    });
+    assert.equal(suspendedVal.data.valid, false);
+    assert.equal(suspendedVal.data.message, 'Promo code inactive.');
+  });
+
+  // 26 & 27. Student Refer-a-Friend Programme, Auditable Wallet Ledger, Self-Referral Prevention, and Refund Reversal
+  await check(26, 'Student Refer-a-Friend Programme grants 10% friend discount, credits referrer wallet idempotently after capture, and reverses on revoke', async () => {
+    // Register Referrer Student
+    const referrerReg = await api('/api/v1/auth/register', {
+      method: 'POST',
+      body: {
+        full_name: 'Rishabh Referrer',
+        email: `referrer.${runId}@example.com`,
+        password: 'SecurePassword123!',
+        confirm_password: 'SecurePassword123!',
+      },
+    });
+    assert.equal(referrerReg.status, 201);
+    const referrerToken = referrerReg.data.token;
+    const referrerCode = referrerReg.data.user.referral_code;
+    assert.ok(referrerCode && referrerCode.length >= 6);
+
+    // Self-referral check: Referrer cannot apply their own referral code
+    const histRes = await api('/api/v1/subjects/history');
+    const histPkg = histRes.data.package;
+    const selfRefVal = await api('/api/v1/promo/validate', {
+      method: 'POST',
+      token: referrerToken,
+      body: {
+        code: referrerCode,
+        package_id: histPkg.id,
+      },
+    });
+    assert.equal(selfRefVal.data.valid, false);
+    assert.equal(selfRefVal.data.message, 'You cannot use your own referral code.');
+
+    // Register Referred Friend using ?ref=referrerCode
+    const friendReg = await api('/api/v1/auth/register', {
+      method: 'POST',
+      body: {
+        full_name: 'Referred Friend',
+        email: `friend.${runId}@example.com`,
+        password: 'FriendPassword123!',
+        confirm_password: 'FriendPassword123!',
+        referral_code: referrerCode,
+      },
+    });
+    assert.equal(friendReg.status, 201);
+    const friendToken = friendReg.data.token;
+    const friendUserId = friendReg.data.user.id;
+    assert.equal(friendReg.data.user.referred_by_code, referrerCode);
+
+    // Friend creates order on History package using referrerCode (10% discount)
+    const friendOrd = await api('/api/v1/payments/create-order', {
+      method: 'POST',
+      token: friendToken,
+      body: {
+        package_id: histPkg.id,
+        promo_code: referrerCode,
+      },
+    });
+    assert.equal(friendOrd.status, 200);
+    const expectedFriendDiscount = Math.round((histPkg.price_paise * 10) / 100);
+    const expectedFriendPayable = histPkg.price_paise - expectedFriendDiscount;
+    assert.equal(friendOrd.data.order.discount_amount_paise, expectedFriendDiscount);
+    assert.equal(friendOrd.data.order.final_amount_paise, expectedFriendPayable);
+
+    // Before payment capture: Referrer wallet credit must still be 0
+    const refStatsBefore = await api('/api/v1/referrals/my', { token: referrerToken });
+    assert.equal(refStatsBefore.data.stats.available_wallet_credit_paise, 0);
+    assert.equal(refStatsBefore.data.stats.pending_referrals, 1);
+
+    // Verify Friend's payment capture
+    const gwOrderId = friendOrd.data.order.gateway_order_id;
+    const gwPayId = `pay_ref_${runId}`;
+    const validSig = crypto
+      .createHmac('sha256', RAZORPAY_SECRET)
+      .update(`${gwOrderId}|${gwPayId}`)
+      .digest('hex');
+
+    const verifyFriend = await api('/api/v1/payments/verify', {
+      method: 'POST',
+      token: friendToken,
+      body: {
+        razorpay_order_id: gwOrderId,
+        razorpay_payment_id: gwPayId,
+        razorpay_signature: validSig,
+        amount_paise: expectedFriendPayable,
+      },
+    });
+    assert.equal(verifyFriend.status, 200);
+
+    // Duplicate verify call must be idempotent and NEVER double-credit referrer wallet
+    const dupVerifyFriend = await api('/api/v1/payments/verify', {
+      method: 'POST',
+      token: friendToken,
+      body: {
+        razorpay_order_id: gwOrderId,
+        razorpay_payment_id: gwPayId,
+        razorpay_signature: validSig,
+        amount_paise: expectedFriendPayable,
+      },
+    });
+    assert.equal(dupVerifyFriend.status, 200);
+
+    const expectedReferrerReward = Math.round((histPkg.price_paise * 10) / 100);
+    const refStatsAfter = await api('/api/v1/referrals/my', { token: referrerToken });
+    assert.equal(refStatsAfter.data.stats.successful_referral_purchases, 1);
+    assert.equal(refStatsAfter.data.stats.available_wallet_credit_paise, expectedReferrerReward);
+    assert.equal(refStatsAfter.data.wallet_ledger.length, 1);
+
+    // Revoke friend's purchase via admin endpoint -> Referrer wallet credit must be reversed to 0
+    const revokeRes = await api('/api/v1/admin/purchases/manual', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        user_id: friendUserId,
+        subject_id: histRes.data.subject.id,
+        action: 'revoke',
+        reason: 'Automated test refund reversal verification',
+      },
+    });
+    assert.equal(revokeRes.status, 200);
+
+    const refStatsReversed = await api('/api/v1/referrals/my', { token: referrerToken });
+    assert.equal(refStatsReversed.data.stats.available_wallet_credit_paise, 0);
+    assert.equal(refStatsReversed.data.referrals[0].status, 'reversed');
+    assert.equal(refStatsReversed.data.wallet_ledger.length, 2);
+  });
+
+  // 28. Registration Confirm Password & Change Password Confirm Validation
+  await check(27, 'Registration and Change Password enforce confirm password matching on the backend', async () => {
+    const mismatchReg = await api('/api/v1/auth/register', {
+      method: 'POST',
+      body: {
+        full_name: 'Mismatch User',
+        email: `mismatch.${runId}@example.com`,
+        password: 'PasswordOne123!',
+        confirm_password: 'PasswordTwo456!',
+      },
+    });
+    assert.equal(mismatchReg.status, 400);
+    assert.equal(mismatchReg.data.error, 'Passwords do not match.');
+
+    const mismatchChange = await api('/api/v1/auth/change-password', {
+      method: 'POST',
+      token: studentAToken,
+      body: {
+        current_password: 'AnyPassword123!',
+        new_password: 'NewPassword123!',
+        confirm_new_password: 'DifferentPassword123!',
+      },
+    });
+    assert.equal(mismatchChange.status, 400);
+    assert.equal(mismatchChange.data.error, 'New passwords do not match.');
+  });
+
+  // 29. Discount Stacking Prevention & Invalid Promo Code Rejection
+  await check(28, 'Promo code validation rejects invalid codes and blocks stacking a second code', async () => {
+    const geogRes = await api('/api/v1/subjects/geography');
+    const geogPkg = geogRes.data.package;
+
+    const invalidPromo = await api('/api/v1/promo/validate', {
+      method: 'POST',
+      token: studentBToken,
+      body: {
+        code: 'NONEXISTENT999',
+        package_id: geogPkg.id,
+      },
+    });
+    assert.equal(invalidPromo.data.valid, false);
+    assert.equal(invalidPromo.data.message, 'Invalid promo code.');
+
+    const stackAttempt = await api('/api/v1/promo/validate', {
+      method: 'POST',
+      token: studentBToken,
+      body: {
+        code: 'SECOND_CODE',
+        package_id: geogPkg.id,
+        currently_applied_code: 'FIRST_CODE',
+      },
+    });
+    assert.equal(stackAttempt.data.valid, false);
+    assert.equal(stackAttempt.data.message, 'Another discount is already applied.');
+  });
+
   console.log('----------------------------------------------------------------------');
-  console.log(`ALL ${passed} / 20 PRODUCTION-READINESS INTEGRATION CHECKS PASSED.`);
+  console.log(`ALL ${passed} / 28 PRODUCTION-READINESS & MARKETING INTEGRATION CHECKS PASSED.`);
   console.log('----------------------------------------------------------------------');
 }
 

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
   full_name TEXT NOT NULL CHECK (char_length(trim(full_name)) >= 1 AND char_length(full_name) <= 120),
   email TEXT NOT NULL UNIQUE CHECK (char_length(email) >= 3 AND char_length(email) <= 254),
   password_hash TEXT NULL,
+  must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
   role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
   account_status TEXT NOT NULL DEFAULT 'active' CHECK (account_status IN ('active', 'suspended')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 
 DROP TRIGGER IF EXISTS set_users_updated_at ON users;
 CREATE TRIGGER set_users_updated_at

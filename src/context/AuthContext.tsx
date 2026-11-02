@@ -12,12 +12,21 @@ interface AuthContextValue {
   };
   loading: boolean;
   authError: string | null;
-  loginWithEmail: (email: string, password?: string, fullName?: string) => Promise<UserProfile | null>;
-  registerWithEmail: (fullName: string, email: string, password: string) => Promise<UserProfile | null>;
-  signInWithGoogle: () => Promise<UserProfile | null>;
+  loginWithEmail: (email: string, password: string) => Promise<UserProfile | null>;
+  registerWithEmail: (
+    fullName: string,
+    email: string,
+    password: string,
+    confirmPassword?: string,
+    referralCode?: string
+  ) => Promise<UserProfile | null>;
+  changePassword: (
+    currentPassword: string,
+    newPassword: string,
+    confirmNewPassword?: string
+  ) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
-  switchRoleView: (targetRole: 'student' | 'admin') => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -75,8 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginWithEmail = async (
     email: string,
-    password = '',
-    fullName?: string
+    password: string
   ): Promise<UserProfile | null> => {
     setAuthError(null);
     try {
@@ -85,7 +93,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         body: JSON.stringify({
           email: email.trim(),
           password,
-          full_name: fullName,
         }),
       });
       setAuthToken(res.token);
@@ -99,7 +106,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const registerWithEmail = async (
     fullName: string,
     email: string,
-    password: string
+    password: string,
+    confirmPassword?: string,
+    referralCode?: string
   ): Promise<UserProfile | null> => {
     setAuthError(null);
     try {
@@ -109,6 +118,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           full_name: fullName.trim(),
           email: email.trim(),
           password,
+          confirm_password: confirmPassword ?? password,
+          referral_code: referralCode ? referralCode.trim().toUpperCase() : undefined,
         }),
       });
       setAuthToken(res.token);
@@ -119,8 +130,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signInWithGoogle = async (): Promise<UserProfile | null> => {
-    return loginWithEmail('student@primeprep.in', '', 'Aarav Sharma');
+  const changePassword = async (
+    currentPassword: string,
+    newPassword: string,
+    confirmNewPassword?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await apiRequest<{ status: string; token?: string; user: UserProfile }>(
+        '/api/v1/auth/change-password',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword,
+            confirm_new_password: confirmNewPassword ?? newPassword,
+          }),
+        }
+      );
+      if (res.token) {
+        setAuthToken(res.token);
+      }
+      setProfile(res.user);
+      return { success: true };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Failed to update password.',
+      };
+    }
   };
 
   const logout = async (): Promise<void> => {
@@ -134,14 +171,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await fetchBackendSession();
   };
 
-  const switchRoleView = async (targetRole: 'student' | 'admin'): Promise<void> => {
-    const res = await apiRequest<{ user: UserProfile }>('/api/v1/auth/switch-role', {
-      method: 'POST',
-      body: JSON.stringify({ target_role: targetRole }),
-    });
-    setProfile(res.user);
-  };
-
   return (
     <AuthContext.Provider
       value={{
@@ -152,10 +181,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         authError,
         loginWithEmail,
         registerWithEmail,
-        signInWithGoogle,
+        changePassword,
         logout,
         refreshProfile,
-        switchRoleView,
       }}
     >
       {children}

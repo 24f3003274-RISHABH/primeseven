@@ -21,6 +21,7 @@ import { ResultDetailPage } from './pages/student/ResultDetailPage.tsx';
 import { MyResultsPage } from './pages/student/MyResultsPage.tsx';
 import { StudentDashboardPage } from './pages/student/StudentDashboardPage.tsx';
 import { MyPurchasesPage } from './pages/student/MyPurchasesPage.tsx';
+import { ChangePasswordPage } from './pages/auth/ChangePasswordPage.tsx';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage.tsx';
 
 const ProtectedRoute: React.FC<{
@@ -111,6 +112,14 @@ export default function App() {
                 element={
                   <ProtectedRoute>
                     <MyPurchasesPage />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/change-password"
+                element={
+                  <ProtectedRoute>
+                    <ChangePasswordPage />
                   </ProtectedRoute>
                 }
               />

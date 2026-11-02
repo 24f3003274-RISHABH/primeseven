@@ -25,13 +25,15 @@ async function runBackendTestSuite() {
   }
 
   // 1. Verify SQL Migrations and Seed Scripts Exist and Define Required Constraints
-  verify('1. PostgreSQL migration files (001, 002) and seed file exist and contain FK/UNIQUE constraints', () => {
+  verify('1. PostgreSQL migration files (001, 002, 003) and seed file exist and contain FK/UNIQUE constraints', () => {
     const mig1Path = path.resolve(process.cwd(), 'database/migrations/001_initial_schema.sql');
     const mig2Path = path.resolve(process.cwd(), 'database/migrations/002_indexes_and_rls.sql');
+    const mig3Path = path.resolve(process.cwd(), 'database/migrations/003_marketing_referrals_schema.sql');
     const seedPath = path.resolve(process.cwd(), 'database/seeds/001_initial_catalogue_seed.sql');
 
     assert.ok(fs.existsSync(mig1Path), '001_initial_schema.sql must exist');
     assert.ok(fs.existsSync(mig2Path), '002_indexes_and_rls.sql must exist');
+    assert.ok(fs.existsSync(mig3Path), '003_marketing_referrals_schema.sql must exist');
     assert.ok(fs.existsSync(seedPath), '001_initial_catalogue_seed.sql must exist');
 
     const mig1Sql = fs.readFileSync(mig1Path, 'utf-8');
@@ -39,6 +41,12 @@ async function runBackendTestSuite() {
     assert.ok(mig1Sql.includes('CONSTRAINT uq_one_attempt_per_user_test UNIQUE (user_id, test_id)'));
     assert.ok(mig1Sql.includes('CONSTRAINT uq_attempt_question_answer UNIQUE (attempt_id, question_id)'));
     assert.ok(!mig1Sql.toLowerCase().includes('chapter_id'), 'Zero chapter fields allowed in schema');
+
+    const mig3Sql = fs.readFileSync(mig3Path, 'utf-8');
+    assert.ok(mig3Sql.includes('CREATE TABLE IF NOT EXISTS sales_agents'));
+    assert.ok(mig3Sql.includes('CREATE TABLE IF NOT EXISTS promo_codes'));
+    assert.ok(mig3Sql.includes('CREATE TABLE IF NOT EXISTS referral_attributions'));
+    assert.ok(mig3Sql.includes('CREATE TABLE IF NOT EXISTS wallet_transactions'));
   });
 
   // 2. Verify Initial Catalogue Invariants (7 subjects, 3 categories, 210 tests, 2 global free tests)

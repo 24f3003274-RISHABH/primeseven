@@ -123,6 +123,50 @@ export async function verifySessionToken(token: string): Promise<VerifiedTokenPa
 }
 
 export function hashPassword(password: string): string {
-  const salt = 'primeprep_cuetpg_salt_v1';
-  return crypto.scryptSync(password, salt, 64).toString('hex');
+  const randomSalt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, randomSalt, 64).toString('hex');
+  return `${randomSalt}:${derived}`;
 }
+
+export function verifyPassword(password: string, storedHash?: string): boolean {
+  if (!password || !storedHash) return false;
+  try {
+    if (storedHash.includes(':')) {
+      const [salt, keyHex] = storedHash.split(':');
+      if (!salt || !keyHex) return false;
+      const derived = crypto.scryptSync(password, salt, 64);
+      const expected = Buffer.from(keyHex, 'hex');
+      if (derived.length !== expected.length) return false;
+      return crypto.timingSafeEqual(derived, expected);
+    }
+    // Backward compatibility with v1 deterministic salt
+    const legacyDerived = crypto.scryptSync(password, 'primeprep_cuetpg_salt_v1', 64);
+    const expected = Buffer.from(storedHash, 'hex');
+    if (legacyDerived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(legacyDerived, expected);
+  } catch {
+    return false;
+  }
+}
+
+export function safeCompareSecret(provided: string, expected: string): boolean {
+  if (!provided || !expected) return false;
+  const bufA = crypto.createHash('sha256').update(provided).digest();
+  const bufB = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+export function getOfficialAdminConfig(): {
+  adminName: string;
+  adminEmail: string;
+  initialPassword?: string;
+  setupSecret?: string;
+} {
+  return {
+    adminName: cleanEnvSecret(process.env.ADMIN_NAME) || 'Prime Seven',
+    adminEmail: (cleanEnvSecret(process.env.ADMIN_EMAIL) || 'primeseven@gmail.com').toLowerCase(),
+    initialPassword: cleanEnvSecret(process.env.ADMIN_INITIAL_PASSWORD),
+    setupSecret: cleanEnvSecret(process.env.ADMIN_SETUP_SECRET),
+  };
+}
+
